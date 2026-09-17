@@ -1,5 +1,6 @@
 import pytest
 
+from conftest import fast_rates
 from rona.cotrans import (
     Pause,
     SimulationConfig,
@@ -8,7 +9,9 @@ from rona.cotrans import (
     time_grid,
 )
 
-SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCG"
+# short on purpose: these tests exercise plumbing, and simulation
+# cost grows steeply with length
+SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGG"
 
 
 def test_arrival_times_respect_rate_and_start_length():
@@ -46,7 +49,10 @@ def test_time_grid_shapes():
 
 
 def test_trajectory_is_reproducible_and_grid_aligned():
-    config = SimulationConfig(frames=25, transcription=TranscriptionSchedule(post_time=2.0))
+    config = SimulationConfig(
+        frames=25, rates=fast_rates(),
+        transcription=TranscriptionSchedule(post_time=0.5),
+    )
     a = simulate_trajectory(SEQ, config, seed=3)
     b = simulate_trajectory(SEQ, config, seed=3)
     c = simulate_trajectory(SEQ, config, seed=4)
@@ -63,7 +69,7 @@ def test_polymerase_footprint_keeps_the_3_prime_end_unpaired():
     """Nothing inside the footprint may pair while transcription is running."""
     footprint = 12
     config = SimulationConfig(
-        frames=40,
+        frames=40, rates=fast_rates(),
         transcription=TranscriptionSchedule(
             rate=20.0, footprint=footprint, post_time=0.0
         ),
@@ -77,7 +83,10 @@ def test_polymerase_footprint_keeps_the_3_prime_end_unpaired():
 
 
 def test_structures_only_span_the_transcribed_prefix():
-    config = SimulationConfig(frames=30, transcription=TranscriptionSchedule(post_time=1.0))
+    config = SimulationConfig(
+        frames=30, rates=fast_rates(),
+        transcription=TranscriptionSchedule(post_time=0.3),
+    )
     trajectory = simulate_trajectory(SEQ, config, seed=5)
     for frame in trajectory.frames:
         assert len(frame.structure) == frame.length
@@ -85,6 +94,8 @@ def test_structures_only_span_the_transcribed_prefix():
 
 
 def test_equilibrium_mode_has_the_whole_chain_from_the_start():
-    config = SimulationConfig(frames=10, transcription=None, duration=1.0)
+    config = SimulationConfig(
+        frames=10, rates=fast_rates(), transcription=None, duration=1.0
+    )
     trajectory = simulate_trajectory(SEQ, config, seed=1)
     assert all(f.length == len(SEQ) for f in trajectory.frames)

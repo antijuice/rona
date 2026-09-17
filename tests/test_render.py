@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import numpy as np
 import pytest
 
+from conftest import fast_rates
 from rona.cotrans import SimulationConfig, TranscriptionSchedule
 from rona.ensemble import simulate_ensemble
 from rona.render import plots
@@ -24,7 +25,9 @@ from rona.render.player import player_html
 from rona.render.svg import DrawOptions, legend_svg, structure_svg
 from rona.struct import iter_pairs, parse_dotbracket
 
-SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCG"
+# short on purpose: these tests exercise plumbing, and simulation
+# cost grows steeply with length
+SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGG"
 
 NESTED = [
     "((((((....))))))",
@@ -175,7 +178,8 @@ def test_legend_svg_is_well_formed():
 @pytest.fixture(scope="module")
 def ensemble():
     config = SimulationConfig(
-        frames=12, transcription=TranscriptionSchedule(rate=50.0, post_time=1.0)
+        frames=12, rates=fast_rates(),
+        transcription=TranscriptionSchedule(rate=50.0, post_time=0.3),
     )
     return simulate_ensemble(SEQ, config, n_trajectories=8, seed=1, workers=1)
 

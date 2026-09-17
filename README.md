@@ -96,25 +96,30 @@ labels, bands = ensemble.occupancy()            # the folding pathway
 ## A worked result
 
 A designed folding trap, 44 nt. Segment A pairs with the nearby A′ the moment
-A′ is transcribed — a local, fast, 8 bp hairpin. The global minimum instead
-pairs A′ with the later A″, an 11 bp helix worth 2.2 kcal/mol more.
+A′ is transcribed — a local, fast, 8 bp hairpin. The global free-energy minimum
+instead pairs A′ with the *later* A″, an 11 bp helix worth 2.2 kcal/mol more.
 
 | | structure | ΔG (kcal/mol) |
 |---|---|---|
 | ViennaRNA MFE | `............(((((((((((.((....)).)))))))))))` | −16.8 |
-| **Cotranscriptional, 30 nt/s** | **`((((((((....))))))))........................` — 100% of the ensemble** | **−14.6** |
-| Refolded from the open chain | reaches the MFE in 56% of trajectories | — |
+| local trap | `((((((((....))))))))........................` | −14.6 |
+| **rona, cotranscriptional at 30 nt/s** | **83% reach the long-range structure** | |
 
-Same sequence, same energy model, different answer — because the order in which
-the chain appears decides which helix wins. `python examples/01_kinetic_trap.py`
-reproduces it, and checks the equilibrium side against ViennaRNA.
+> **A correction worth reading.** An earlier version of this README reported
+> that 100% of the ensemble stayed in the local trap. That was an artefact.
+> The helix move set could not extend a helix once formed, so a hairpin that
+> nucleated behind the polymerase was frozen at its initial length and the only
+> way out was to melt all eight pairs at once — a barrier the simulation could
+> never cross. With zipping added (see `docs/methods.md` §2) the trap is escaped
+> one base pair at a time, as it is in reality, and the answer changes. The
+> defect was found by a per-transition detailed-balance test, not by inspection.
 
 <p align="center">
-  <img src="docs/images/occupancy.svg" alt="Stacked structure populations over log time during and after transcription" width="880">
+  <img src="docs/images/occupancy.svg" alt="Stacked structure populations over time during and after transcription" width="880">
 </p>
 
-Structure populations through a run, on a log time axis. Each band is a distinct
-structure; the plot reads left-to-right as the folding pathway.
+Structure populations through a run. Each band is a distinct structure; the plot
+reads left-to-right as the folding pathway.
 
 <p align="center">
   <img src="docs/images/pseudoknot.svg" alt="An H-type pseudoknot drawn with the crossing helix as a rigid ladder" width="430">
@@ -249,25 +254,39 @@ smoothstep easing, so the structure visibly *morphs* instead of being redrawn.
 
 ## Limitations
 
-Worth being straight about:
+Worth being straight about.
 
+* **Sequence length is the binding constraint: practical to roughly 60–80 nt.**
+  The simulator resolves every elementary event, and zipping a pair onto a helix
+  end is a *futile* fast mode — measured on a 58 nt transcript, **99.7% of all
+  events are zip/unzip**, with forward and reverse counts equal to three
+  significant figures. A 127 nt riboswitch benchmark did not finish. Above this
+  size DrTransformer is the better tool for nested structures, and it is not
+  close: it handled the same 127 nt input in seconds. `docs/methods.md` sets out
+  the fix (lumping the fast mode, as Kinefold and DrTransformer both do).
+* **`k_zip` is a convergence parameter, not just a rate.** The default (10⁶ s⁻¹)
+  is below the physical ~10⁷ s⁻¹ because event count scales linearly with it
+  while the coarse result should not. `examples/05_timescale_separation.py`
+  checks that on your sequence rather than asking you to take it on trust.
 * **Pseudoknot energetics are approximate.** The Turner model has no fitted
   pseudoknot parameters; the topology penalty here is a transparent functional
   form with tunable constants, not a measured parameter set. Treat pseudoknot
   populations as qualitative.
-* **Helix-level coarse-graining.** In the default move set a helix is either
-  absent or occupies the longest unobstructed window of its stem. Partially
-  melted intermediates are not represented. Use `--mode breathe` when that
-  matters — at a large cost in runtime.
-* **Marginal helices are expensive.** A helix with an in-context ΔG of about
-  −2 kcal/mol genuinely opens and closes thousands of times per second, and the
-  SSA simulates every one of those events. This is correct physics, but it means
-  event counts are dominated by breathing. `--max-stem-energy` and `--min-helix`
-  are the knobs.
+* **Not yet validated against experiment.** The harness and the data are in
+  place (`docs/validation.md`), and the baselines are measured, but rona's own
+  number on the fluoride-riboswitch probing data is blocked on the speed problem
+  above. Nothing here should be taken as experimentally benchmarked.
 * **No tertiary structure, no ions beyond the implicit 1 M Na⁺ of the Turner
   parameters, no ligands, no proteins.**
 * **The polymerase is a moving boundary, nothing more.** No backtracking, no
   sequence-dependent elongation, no transcription-coupled folding forces.
+
+## Further reading
+
+* `docs/methods.md` — what is worth borrowing from Kinefold, DrTransformer,
+  Kinfold, CoStochFold and DrForna, and what has been taken already.
+* `docs/validation.md` — the three levels of checking, the public probing data,
+  and the measured baselines.
 
 ## Background
 

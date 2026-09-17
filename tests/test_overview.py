@@ -5,17 +5,21 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from conftest import fast_rates
 from rona.cotrans import SimulationConfig, TranscriptionSchedule
 from rona.ensemble import simulate_ensemble
 from rona.render import colors, overview, png
 
-SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCG"
+# short on purpose: these tests exercise plumbing, and simulation
+# cost grows steeply with length
+SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGG"
 
 
 @pytest.fixture(scope="module")
 def ensemble():
     config = SimulationConfig(
-        frames=14, transcription=TranscriptionSchedule(rate=50.0, post_time=1.0)
+        frames=14, rates=fast_rates(),
+        transcription=TranscriptionSchedule(rate=50.0, post_time=0.3),
     )
     return simulate_ensemble(SEQ, config, n_trajectories=8, seed=1, workers=1)
 

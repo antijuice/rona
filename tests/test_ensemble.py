@@ -1,17 +1,21 @@
 import numpy as np
 import pytest
 
+from conftest import fast_rates
 from rona.cotrans import SimulationConfig, TranscriptionSchedule
 from rona.ensemble import simulate_ensemble
 from rona.struct import iter_pairs, parse_dotbracket
 
-SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCG"
+# short on purpose: these tests exercise plumbing, and simulation
+# cost grows steeply with length
+SEQ = "GGCGCGGCACCGUCCGCGGAACAAACGG"
 
 
 @pytest.fixture(scope="module")
 def ensemble():
     config = SimulationConfig(
-        frames=20, transcription=TranscriptionSchedule(rate=40.0, post_time=2.0)
+        frames=20, rates=fast_rates(),
+        transcription=TranscriptionSchedule(rate=40.0, post_time=0.5),
     )
     return simulate_ensemble(SEQ, config, n_trajectories=12, seed=2, workers=1)
 
@@ -38,9 +42,13 @@ def test_occupancy_filter_only_removes_mass(ensemble):
 
 def test_dominant_matches_occupancy(ensemble):
     labels, matrix = ensemble.occupancy()
+    index = {label: row for row, label in enumerate(labels)}
     for t, (structure, population) in enumerate(ensemble.dominant()):
-        assert population == pytest.approx(matrix[:, t].max())
-        assert labels[int(np.argmax(matrix[:, t]))] == structure
+        peak = matrix[:, t].max()
+        assert population == pytest.approx(peak)
+        # several structures can be tied for most populated; the reported one
+        # only has to be one of them
+        assert matrix[index[structure], t] == pytest.approx(peak)
 
 
 def test_pair_probabilities_are_consistent(ensemble):
@@ -98,7 +106,8 @@ def test_serialisation_round_trips(ensemble, tmp_path):
 
 def test_parallel_matches_serial():
     config = SimulationConfig(
-        frames=8, transcription=TranscriptionSchedule(rate=50.0, post_time=1.0)
+        frames=8, rates=fast_rates(),
+        transcription=TranscriptionSchedule(rate=50.0, post_time=0.3),
     )
     serial = simulate_ensemble(SEQ, config, n_trajectories=4, seed=7, workers=1)
     parallel = simulate_ensemble(SEQ, config, n_trajectories=4, seed=7, workers=2)

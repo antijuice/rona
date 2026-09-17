@@ -1,10 +1,16 @@
-"""Cotranscriptional folding produces a different answer from equilibrium.
+"""Cotranscriptional folding, compared against equilibrium.
 
 A designed folding trap: segment A pairs with the nearby A' the moment A' is
 transcribed - a local, fast, 8 bp hairpin.  The global free-energy minimum
 instead pairs A' with the *later* A'', an 11 bp helix that is 2.2 kcal/mol
-better.  An equilibrium calculation reports the long-range helix.  The molecule,
-folding as it is made, never gets there.
+better.
+
+The interesting part is that the answer depends on whether helices can zip.
+With the trap forced to melt all at once it is inescapable; letting it unzip one
+pair at a time - which is what really happens - most of the ensemble escapes.
+The barrier that matters is the stepwise one, not the all-at-once one.  Vary
+``rate`` below and watch the balance shift: the faster the polymerase, the less
+time the trap has to resolve.
 
 Run with ViennaRNA installed to see the equilibrium comparison as well.
 """
@@ -55,9 +61,9 @@ def main() -> None:
         print(f"    {population:6.1%}  {structure}")
 
     print(
-        "\n  The difference is the point: the same sequence, the same energy\n"
-        "  model, and a different answer, because the order in which the chain\n"
-        "  appears decides which helix wins."
+        "\n  Same sequence, same energy model, two different answers, because\n"
+        "  the order in which the chain appears decides which helix nucleates\n"
+        "  first and how long it has to resolve."
     )
 
 

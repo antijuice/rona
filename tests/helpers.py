@@ -20,7 +20,11 @@ def make_engine(sequence, *, mode="helix", pk=False, rates=None, temperature=37.
     energy = FoldingEnergy(sequence, model, pk_model)
     moveset = build_moveset(model, energy.enc)
     engine = KineticEngine(
-        energy, moveset, rates or RateModel(), pk_model=pk_model, mode=mode
+        energy,
+        moveset,
+        rates or RateModel(k_zip=3.0e5),
+        pk_model=pk_model,
+        mode=mode,
     )
     engine.grow(len(sequence), 0)
     return engine
