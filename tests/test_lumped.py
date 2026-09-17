@@ -28,7 +28,7 @@ from helpers import (
 from rona.energy.evaluator import FoldingEnergy
 from rona.energy.model import NearestNeighbourModel
 from rona.energy.pseudoknot import PseudoknotModel
-from rona.kinetics import FORM, RateModel
+from rona.kinetics import FORM, MELT, RateModel
 from rona.lumped import LumpedEngine, canonical_windows
 from rona.moves import build_moveset
 from rona.struct import Helix
@@ -71,11 +71,12 @@ def _reference_chain(engine):
         engine.propensity()
         out: dict[frozenset, float] = {}
         for move in engine._moves:
-            target = (
-                frozenset(current | {move.stem})
-                if move.kind == FORM
-                else frozenset(current - {move.stem})
-            )
+            if move.kind == FORM:
+                target = frozenset(current | {move.stem})
+            elif move.kind == MELT:
+                target = frozenset(current - {move.stem})
+            else:
+                target = frozenset((current - {move.other}) | {move.stem})
             out[target] = out.get(target, 0.0) + move.rate
             if target not in seen:
                 seen.add(target)
@@ -257,9 +258,11 @@ def test_lumped_mode_respects_the_pseudoknot_switch():
 def test_fast_placement_agrees_with_the_definition():
     """The O(ladder) placement must equal a full canonical placement, always.
 
-    ``_lumped_form_window`` and ``_lumped_melt_ok`` read the answer off an owner
-    array rather than re-placing the whole structure.  That is an optimisation
-    of :func:`canonical_windows`, and this is the check that it is only that.
+    ``_lumped_form_window`` reads a stem's window off an owner array rather
+    than re-placing the whole structure, and reports whether anything else
+    moved; ``_lumped_melt_local`` answers the same question for a melt.  Both
+    are optimisations of :func:`canonical_windows`, and this is the check that
+    they are only that.
     """
     import random
 
@@ -270,6 +273,7 @@ def test_fast_placement_agrees_with_the_definition():
     rng = random.Random(7)
     stems = range(len(engine.moveset.stems))
     checked = 0
+    concerted = 0
     for _ in range(300):
         subset = rng.sample(sorted(stems), rng.randint(0, 5))
         windows = canonical_windows(
@@ -294,12 +298,19 @@ def test_fast_placement_agrees_with_the_definition():
                 len(sequence),
                 engine.min_helix,
             )
-            expected = trial.get(candidate)
-            if expected is not None and any(
-                trial.get(k) != v for k, v in windows.items()
-            ):
-                expected = None
-            assert engine._lumped_form_window(candidate) == expected
+            found = engine._lumped_form_window(candidate)
+            if candidate not in trial or len(trial) != len(windows) + 1:
+                assert found is None
+            else:
+                moved = any(trial.get(k) != v for k, v in windows.items())
+                assert found is not None
+                helix, reported = found
+                assert helix == trial[candidate]
+                if moved:
+                    concerted += 1
+                    assert reported == trial
+                else:
+                    assert reported is None
             checked += 1
         for member in windows:
             rest = [k for k in subset if k != member]
@@ -307,6 +318,134 @@ def test_fast_placement_agrees_with_the_definition():
                 engine.moveset, rest, len(sequence), engine.min_helix
             )
             expected = all(after.get(k) == v for k, v in windows.items() if k != member)
-            assert engine._lumped_melt_ok(member) is expected
+            assert engine._lumped_melt_local(member) is expected
             checked += 1
     assert checked > 1000
+    # the concerted case is the interesting one; it must actually be exercised
+    assert concerted > 0
+
+
+def _master_equation(engine, times):
+    """``P(t)`` for each t, from the open chain, over the enumerated states."""
+    import numpy as np
+
+    states = enumerate_states(engine)
+    position = {key: i for i, key in enumerate(states)}
+    size = len(states)
+    generator = np.zeros((size, size))
+    for source in states:
+        for target, rate in outgoing_rates(engine, source).items():
+            generator[position[target], position[source]] += rate
+            generator[position[source], position[source]] -= rate
+    p = np.zeros(size)
+    p[position[frozenset()]] = 1.0
+    out = []
+    previous = 0.0
+    for moment in times:
+        step = moment - previous
+        scale = np.abs(generator).max() * step
+        squarings = (
+            max(0, int(math.ceil(math.log2(scale / 0.25)))) if scale > 0.25 else 0
+        )
+        small = step / (2**squarings)
+        matrix = np.eye(size)
+        term = np.eye(size)
+        for order in range(1, 18):
+            term = term @ (generator * small) / order
+            matrix = matrix + term
+        for _ in range(squarings):
+            matrix = matrix @ matrix
+        p = matrix @ p
+        out.append(p.copy())
+        previous = moment
+    return states, out
+
+
+TIMES = (1e-4, 1e-2, 1.0, 10.0)
+
+
+@pytest.mark.parametrize("sequence", SEQUENCES[:3])
+def test_lumped_kinetics_track_the_microscopic_kinetics(sequence):
+    """Not just the equilibrium: the whole time course.
+
+    Both master equations are solved exactly and compared at every time, which
+    is the only way to see whether lumping has changed a *rate*.  It is what
+    caught the barrier being wrong twice - first missing the nucleation
+    transition state altogether, then placing it at a full melt rather than at
+    the saddle of a zipper trade.
+    """
+    micro = make_engine(sequence, mode="helix", pk=False)
+    lumped = make_engine(sequence, mode="lumped", pk=False)
+    micro_states, micro_p = _master_equation(micro, TIMES)
+    lumped_states, lumped_p = _master_equation(lumped, TIMES)
+    micro_labels = [_stem_set(k) for k in micro_states]
+    lumped_labels = [_stem_set(k) for k in lumped_states]
+    worst = 0.0
+    for pm, pl in zip(micro_p, lumped_p):
+        a: dict[frozenset, float] = {}
+        b: dict[frozenset, float] = {}
+        for label, value in zip(micro_labels, pm):
+            a[label] = a.get(label, 0.0) + value
+        for label, value in zip(lumped_labels, pl):
+            b[label] = b.get(label, 0.0) + value
+        worst = max(
+            worst,
+            0.5 * math.fsum(abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in set(a) | set(b)),
+        )
+    # the transient lags, because a whole helix appears in one lumped event
+    # where the microscopic chain has to zip it
+    assert worst < 0.25
+    # by the end both must agree closely
+    assert (
+        0.5
+        * math.fsum(
+            abs(x - y)
+            for x, y in (
+                (
+                    sum(v for lab, v in zip(micro_labels, micro_p[-1]) if lab == key),
+                    sum(v for lab, v in zip(lumped_labels, lumped_p[-1]) if lab == key),
+                )
+                for key in {*micro_labels, *lumped_labels}
+            )
+        )
+        < 0.05
+    )
+
+
+def test_lumped_mode_escapes_a_kinetic_trap():
+    """The load-bearing test of the barrier model.
+
+    A designed trap: a local 8 bp hairpin forms first and has to be traded for
+    an 11 bp helix that shares its nucleotides.  In the lumped chain the two
+    cannot coexist, so if the only route between them were a full melt the trap
+    would never resolve - which is exactly what the first two barrier models
+    did, freezing the ensemble at its initial split forever.  The microscopic
+    simulator resolves it because the incumbent retracts pair by pair while the
+    challenger zips in; the barrier here has to reproduce that.
+    """
+    sequence = "GGACGCAGAAAACUGCGUCCUUAAUAAUAAUAAUAAGGACGCAG"
+    times = (0.1, 1.0, 10.0)
+
+    def trapped(engine):
+        states, courses = _master_equation(engine, times)
+        out = []
+        for p in courses:
+            total = 0.0
+            for key, value in zip(states, p):
+                pairs = [
+                    (i + d, j - d)
+                    for _stem, i, j, length in key
+                    for d in range(length)
+                ]
+                if pairs and not any(i < 20 and j > 35 for i, j in pairs):
+                    total += value
+            out.append(total)
+        return out
+
+    micro = trapped(make_engine(sequence, mode="helix", pk=False))
+    lumped = trapped(make_engine(sequence, mode="lumped", pk=False))
+    # both start trapped, and both must get out
+    assert micro[0] > 0.3 and lumped[0] > 0.3
+    assert micro[-1] < 0.1 and lumped[-1] < 0.1
+    for a, b in zip(micro, lumped):
+        assert abs(a - b) < 0.15

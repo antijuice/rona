@@ -27,13 +27,15 @@ with the class of bug it kept producing.
 
 from __future__ import annotations
 
+import heapq
+import itertools
 import math
 import random
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
 from .energy.evaluator import FoldingEnergy
-from .kinetics import MAX_EXPONENT, FORM, MELT, Move, RateModel
+from .kinetics import EXCHANGE, MAX_EXPONENT, FORM, MELT, Move, RateModel
 from .moves import MoveSet
 from .struct import Helix, to_dotbracket
 
@@ -79,13 +81,238 @@ def canonical_windows(
     return out
 
 
-def _has_crossing(windows: dict[int, Helix]) -> bool:
-    helices = list(windows.values())
+def nucleation_window(
+    energy: FoldingEnergy, helix: Helix, min_helix: int
+) -> Helix:
+    """The nucleus of ``helix``: its most stable ``min_helix``-pair run.
+
+    Lumping the window away also lumps away the *transition state* between two
+    stem sets, which is the nucleus - a helix does not appear whole, it
+    nucleates and then zips.  Keeping the barrier is what keeps the mode
+    kinetic rather than a fast equilibrium sampler, so the nucleus has to be
+    named explicitly.  It is a pure function of the window (and the sequence),
+    which is what lets both directions of a transition agree on it.
+    """
+    if helix.length <= min_helix:
+        return helix
+    best = None
+    best_cost = float("inf")
+    for offset in range(helix.length - min_helix + 1):
+        trial = Helix(helix.i + offset, helix.j - offset, min_helix)
+        cost = energy.helix_stability(trial)
+        if cost < best_cost:
+            best, best_cost = trial, cost
+    return best
+
+
+def barrier_rates(
+    prefactor: float, dg: float, dg_nucleus: float, kT: float
+) -> tuple[float, float]:
+    """``(form, melt)`` rates for a transition whose top is the nucleus.
+
+    The transition state is the highest of the three free energies involved -
+    the starting set, the set with only the nucleus formed, and the set with
+    the whole window formed - and each direction is
+    ``A exp(-(G_top - G_start)/RT)``.  The ratio is ``exp(-dg/RT)`` whatever
+    the barrier, so detailed balance is exact by construction, and with no
+    barrier this reduces to the Metropolis rule.
+
+    This also recovers the microscopic kinetics rather than merely its
+    equilibrium: a microscopic nucleation followed by fast zipping commits at
+    ``k_nucleate min(1, e^(-dG_nuc/RT))``, which is what this returns.
+    """
+    if dg != dg or dg == float("inf") or dg_nucleus != dg_nucleus:
+        return 0.0, 0.0
+    top = max(0.0, dg, dg_nucleus)
+    if top == float("inf"):
+        return 0.0, 0.0
+    forward = -min(top / kT, MAX_EXPONENT)
+    reverse = -min((top - dg) / kT, MAX_EXPONENT)
+    return prefactor * math.exp(forward), prefactor * math.exp(reverse)
+
+
+def _intervals(
+    moveset: MoveSet, windows: dict[int, Helix]
+) -> dict[int, tuple[int, int]]:
+    """Each window as ``(offset, length)`` in its stem's ladder."""
+    return {
+        index: (helix.i - moveset.stems[index].i, helix.length)
+        for index, helix in windows.items()
+    }
+
+
+def _helix_of(moveset: MoveSet, index: int, span: tuple[int, int]) -> Helix:
+    stem = moveset.stems[index]
+    offset, length = span
+    return Helix(stem.i + offset, stem.j - offset, length)
+
+
+def _steps(
+    moveset: MoveSet,
+    current: dict[int, tuple[int, int]],
+    target: dict[int, tuple[int, int]],
+    min_helix: int,
+    available: int,
+):
+    """Single microscopic moves that take ``current`` closer to ``target``.
+
+    Only moves that remove a pair ``target`` does not want, or add one it does,
+    so the walk is monotone and terminates.  These are the microscopic engine's
+    own moves: nucleate ``min_helix`` pairs, zip or unzip one, melt at
+    nucleation length.
+    """
+    occupied: set[int] = set()
+    for index, span in current.items():
+        occupied.update(_helix_of(moveset, index, span).positions())
+    for index, want in target.items():
+        if index in current:
+            continue
+        # nucleate, at the nucleus of the window it is heading for
+        stem = moveset.stems[index]
+        length = min(min_helix, want[1])
+        for start in range(want[0], want[0] + want[1] - length + 1):
+            span = (start, length)
+            helix = _helix_of(moveset, index, span)
+            if helix.j >= available:
+                continue
+            if occupied.isdisjoint(helix.positions()):
+                yield {**current, index: span}
+    for index, span in current.items():
+        offset, length = span
+        want = target.get(index)
+        if want == span:
+            continue
+        if want is None:
+            if length == min_helix:
+                rest = dict(current)
+                del rest[index]
+                yield rest
+            else:
+                yield {**current, index: (offset + 1, length - 1)}
+                yield {**current, index: (offset, length - 1)}
+            continue
+        want_off, want_len = want
+        # retract the ends the target does not want
+        if offset < want_off and length > min_helix:
+            yield {**current, index: (offset + 1, length - 1)}
+        if offset + length > want_off + want_len and length > min_helix:
+            yield {**current, index: (offset, length - 1)}
+        if length == min_helix and (
+            offset + length <= want_off or want_off + want_len <= offset
+        ):
+            # nowhere to shrink to and no overlap: it has to go
+            rest = dict(current)
+            del rest[index]
+            yield rest
+        # extend towards the ends it does want
+        stem = moveset.stems[index]
+        if offset > want_off:
+            grown = _helix_of(moveset, index, (offset - 1, length + 1))
+            if grown.j < available and occupied.isdisjoint(
+                ((grown.i, grown.j))
+            ):
+                yield {**current, index: (offset - 1, length + 1)}
+        if offset + length < want_off + want_len:
+            grown = _helix_of(moveset, index, (offset, length + 1))
+            inner = (grown.i + length, grown.j - length)
+            if grown.j < available and occupied.isdisjoint(inner):
+                yield {**current, index: (offset, length + 1)}
+
+
+def slide_barrier(
+    energy: FoldingEnergy,
+    moveset: MoveSet,
+    min_helix: int,
+    windows_a: dict[int, Helix],
+    windows_b: dict[int, Helix],
+    available: int,
+    cache: dict,
+    budget: int = 20000,
+) -> float:
+    """Free energy of the lowest saddle between two window assignments.
+
+    Two lumped states that differ in *where* a helix sits are not separated by
+    a barrier as high as melting it: the incumbent retracts pair by pair while
+    the challenger zips into the nucleotides that frees, and the top of that
+    trade is far below either helix's nucleus.  Getting this wrong is the
+    difference between a chain that resolves a kinetic trap and one that
+    freezes in it - a greedy walk gets it wrong, because retracting a helix
+    from its cheaper end is exactly the direction that does not unblock the
+    challenger.
+
+    So the path is optimised, not guessed: a minimum-bottleneck search (Dijkstra
+    with ``max`` in place of ``+``) over the *microscopic* move set - nucleate
+    ``min_helix``, zip or unzip one pair, melt at nucleation length - restricted
+    to moves the two endpoints disagree about, which bounds the search.  The
+    result is the exact lowest saddle over monotone paths, and it is computed in
+    a canonical direction so both directions of the transition read the same
+    number, which is what detailed balance needs.
+
+    Memoised on the pair of assignments: the lumped chain revisits the same
+    transitions constantly, which is the whole point of lumping.
+    """
+    span_a = _intervals(moveset, windows_a)
+    span_b = _intervals(moveset, windows_b)
+    key_a = tuple(sorted(span_a.items()))
+    key_b = tuple(sorted(span_b.items()))
+    if key_b < key_a:
+        key_a, key_b = key_b, key_a
+        span_a, span_b = span_b, span_a
+    cache_key = (key_a, key_b, available)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    seen: dict[tuple, float] = {}
+
+    def energy_of(span, key):
+        value = seen.get(key)
+        if value is None:
+            value = energy.energy(
+                [_helix_of(moveset, i, v) for i, v in span.items()], available
+            )
+            seen[key] = value
+        return value
+
+    counter = itertools.count()
+    start = tuple(sorted(span_a.items()))
+    goal = tuple(sorted(span_b.items()))
+    best = {start: energy_of(span_a, start)}
+    heap = [(best[start], next(counter), start)]
+    answer = float("inf")
+    spent = 0
+    while heap:
+        top, _tie, key = heapq.heappop(heap)
+        if key == goal:
+            answer = top
+            break
+        if top > best.get(key, float("inf")):
+            continue
+        if spent > budget:  # pragma: no cover - guard for pathological cases
+            break
+        span = dict(key)
+        for trial in _steps(moveset, span, span_b, min_helix, available):
+            trial_key = tuple(sorted(trial.items()))
+            spent += 1
+            value = energy_of(trial, trial_key)
+            reached = top if top > value else value
+            if reached < best.get(trial_key, float("inf")):
+                best[trial_key] = reached
+                heapq.heappush(heap, (reached, next(counter), trial_key))
+    cache[cache_key] = answer
+    return answer
+
+
+def _crossing_list(helices) -> bool:
     return any(
         a.crosses(b)
         for index, a in enumerate(helices)
         for b in helices[index + 1 :]
     )
+
+
+def _has_crossing(windows: dict[int, Helix]) -> bool:
+    return _crossing_list(list(windows.values()))
 
 
 @dataclass(slots=True)
@@ -147,6 +374,10 @@ class LumpedEngine:
         self._moves: list[Move] = []
         self._total = 0.0
         self._dirty = True
+        from .kinetics import _competitor_lists
+
+        self._competitors = _competitor_lists(moveset.stems)
+        self._barrier_cache: dict = {}
 
     # ------------------------------------------------------------------
     def _windows_for(self, stems: Iterable[int]) -> dict[int, Helix]:
@@ -154,20 +385,107 @@ class LumpedEngine:
             self.moveset, stems, self.state.available, self.min_helix
         )
 
-    def _others_fixed(self, windows: dict[int, Helix], index: int) -> bool:
-        """Whether ``windows`` agrees with the current state away from ``index``.
+    def _ladder(self, index: int) -> set[int]:
+        stem = self.moveset.stems[index]
+        return {p for k in range(stem.length) for p in (stem.i + k, stem.j - k)}
 
-        Toggling one stem may only be a transition when it leaves the rest of
-        the structure alone; the condition is the same whether ``index`` is
-        being added or removed, which is what makes FORM and MELT exact
-        inverses.  Nothing becomes unreachable: any valid set is still built up
-        in increasing index order, because a stem's canonical window depends
-        only on stems of lower index.
+    def _run_length(self, index: int, taken: set[int]) -> int:
+        stem = self.moveset.stems[index]
+        avail = self.state.available
+        best = run = 0
+        for k in range(stem.length):
+            a, b = stem.i + k, stem.j - k
+            if b < avail and a not in taken and b not in taken:
+                run += 1
+                best = max(best, run)
+            else:
+                run = 0
+        return best
+
+    def _blocked_by(
+        self, windows: dict[int, Helix], holder: int, blocked: int
+    ) -> bool:
+        """Whether ``blocked`` cannot be placed, and ``holder`` alone is why."""
+        taken: set[int] = set()
+        held: set[int] = set()
+        for key, helix in windows.items():
+            (held if key == holder else taken).update(helix.positions())
+        if not (held & self._ladder(blocked)):
+            return False
+        return self._run_length(blocked, taken | held) < self.min_helix <= (
+            self._run_length(blocked, taken)
+        )
+
+    def _exchanges(self, holder: int) -> list[Move]:
+        """One helix replacing a competitor, over a two-nucleus barrier.
+
+        See :meth:`rona.kinetics.KineticEngine._lumped_exchanges`.
         """
+        st = self.state
+        kT = self.energy.kT
+        common = st.stems - {holder}
+        out: list[Move] = []
+        for challenger in sorted(self._competitors[holder]):
+            if challenger in st.stems:
+                continue
+            target = common | {challenger}
+            windows_b = self._windows_for(target)
+            if set(windows_b) != target:
+                continue
+            if not self._blocked_by(st.windows, holder, challenger):
+                continue
+            if not self._blocked_by(windows_b, challenger, holder):
+                continue
+            after = list(windows_b.values())
+            if not self.energy.pk_model.enabled and _has_crossing(windows_b):
+                continue
+            dg = self.energy.energy(after, st.available) - st.energy
+            dg_top = self._slide(windows_b) - st.energy
+            rate, _reverse = barrier_rates(
+                self.rates.prefactor(EXCHANGE), dg, dg_top, kT
+            )
+            if rate > 0.0:
+                out.append(
+                    Move(EXCHANGE, windows_b[challenger], challenger, dg, rate, holder)
+                )
+        return out
+
+    def _others_moved(self, windows: dict[int, Helix], index: int) -> bool:
         for key, helix in self.state.windows.items():
             if key != index and windows.get(key) != helix:
-                return False
-        return True
+                return True
+        for key, helix in windows.items():
+            if key != index and self.state.windows.get(key) != helix:
+                return True
+        return False
+
+    def _slide(self, windows: dict[int, Helix]) -> float:
+        return slide_barrier(
+            self.energy,
+            self.moveset,
+            self.min_helix,
+            self.state.windows,
+            windows,
+            self.state.available,
+            self._barrier_cache,
+        )
+
+    def _transition_energy(self, windows: dict[int, Helix], index: int) -> float:
+        """Free energy of the transition state for toggling ``index``.
+
+        The two states differ by one stem, and possibly by where the stems it
+        competes with sit.  The path between them retracts those competitors to
+        their crowded windows and nucleates this stem: so the top of the path
+        is ``windows`` with every other stem where the crowded state puts it and
+        ``index`` present only as its nucleus.  It is a function of the
+        unordered pair of states, which is all detailed balance needs, and it is
+        the microscopic path - a helix retracts pair by pair while its
+        competitor nucleates in the nucleotides that frees.
+        """
+        nucleus = nucleation_window(self.energy, windows[index], self.min_helix)
+        structure = [h for key, h in windows.items() if key != index]
+        structure.append(nucleus)
+        return self.energy.energy(structure, self.state.available)
 
     def _energy_of(self, windows: dict[int, Helix]) -> float:
         return self.energy.energy(list(windows.values()), self.state.available)
@@ -200,30 +518,48 @@ class LumpedEngine:
                 continue
             trial = st.stems | {index}
             windows = self._windows_for(trial)
-            if index not in windows or not self._others_fixed(windows, index):
-                # (the checks below also reject sets the energy model forbids)
+            if index not in windows or set(windows) != trial:
                 # either the new stem cannot be placed, or placing it would
-                # move an existing helix; both make the move something other
-                # than the inverse of melting this stem again
+                # squeeze an existing helix below the minimum; both make the
+                # target set one the chain does not contain
                 continue
             if not self.energy.pk_model.enabled and _has_crossing(windows):
                 # pseudoknots switched off: the state does not exist, exactly
                 # as the incremental engine's infinite dG says
                 continue
             dg = self._energy_of(windows) - st.energy
-            rate = self.rates.rate(FORM, dg, kT)
+            top = (
+                self._slide(windows)
+                if self._others_moved(windows, index)
+                else self._transition_energy(windows, index)
+            )
+            dg_nuc = top - st.energy
+            rate, _ = barrier_rates(
+                self.rates.prefactor(FORM), dg, dg_nuc, kT
+            )
             if rate > 0.0:
                 out.append(Move(FORM, windows[index], index, dg, rate))
 
         for index in sorted(st.stems):
             trial = st.stems - {index}
             windows = self._windows_for(trial)
-            if set(windows) != trial or not self._others_fixed(windows, index):
+            if set(windows) != trial:
                 continue
             dg = self._energy_of(windows) - st.energy
-            rate = self.rates.rate(MELT, dg, kT)
+            # the transition state is named from the *crowded* side, which is
+            # this state, so both directions agree on it
+            top = (
+                self._slide(windows)
+                if self._others_moved(windows, index)
+                else self._transition_energy(st.windows, index)
+            )
+            dg_nuc = top - (st.energy + dg)
+            _, rate = barrier_rates(
+                self.rates.prefactor(MELT), -dg, dg_nuc, kT
+            )
             if rate > 0.0:
                 out.append(Move(MELT, st.windows[index], index, dg, rate))
+            out.extend(self._exchanges(index))
         return out
 
     def propensity(self) -> float:
@@ -246,7 +582,10 @@ class LumpedEngine:
 
     def apply(self, move: Move) -> None:
         st = self.state
-        if move.kind == FORM:
+        if move.kind == EXCHANGE:
+            st.stems.discard(move.other)
+            st.stems.add(move.stem)
+        elif move.kind == FORM:
             st.stems.add(move.stem)
         else:
             st.stems.discard(move.stem)
