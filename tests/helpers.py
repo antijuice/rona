@@ -46,6 +46,10 @@ def set_state(engine, key: StateKey) -> None:
     # st.pt was replaced, so every derived table has to be rebuilt
     engine._rebuild_core()
     st.energy = engine.energy.energy(st.helices(), st.available)
+    if getattr(engine, "mode", "") == "lumped":
+        # in lumped mode the windows are a function of the stem set, so a
+        # forced state has to be brought back onto that manifold
+        engine._recanonicalise()
 
 
 def state_key(engine) -> StateKey:
@@ -54,31 +58,64 @@ def state_key(engine) -> StateKey:
     )
 
 
-def neighbours(engine, key: StateKey) -> list[StateKey]:
-    """Every state reachable in one move, using the engine's own move set."""
-    out: list[StateKey] = []
+def _move_destination(engine, key: StateKey, kind: str, ident: int, helix) -> StateKey | None:
+    """Apply one move from ``key`` and read the state it lands in.
+
+    ``ident`` is the *slot* for a form move and the stem index for every other
+    kind; a stem may own several slots, and they are different moves reaching
+    different states, so the slot is what identifies a form.
+
+    The destination is never synthesised from the move's own helix: some modes
+    adjust the rest of the structure when a move is applied, so the only
+    reliable answer is the state the engine actually reaches.
+    """
     set_state(engine, key)
     engine.propensity()
-    forms = [
-        (slot, engine._slot_helix[slot])
+    if kind == "form":
+        slot = ident
+        if engine._fen.value(slot) <= 0.0:
+            return None
+        candidate = engine._slot_helix[slot]
+        if candidate is None:
+            return None
+        from rona.kinetics import FORM, Move
+
+        engine.apply(
+            Move(
+                FORM,
+                candidate,
+                engine._slot_stem[slot],
+                engine._slot_dg[slot],
+                engine._fen.value(slot),
+            )
+        )
+        return state_key(engine)
+    live = [
+        m
+        for m in engine._dyn
+        if m.kind == kind and m.stem == ident and m.helix == helix
+    ]
+    if not live:
+        return None
+    engine.apply(live[0])
+    return state_key(engine)
+
+
+def neighbours(engine, key: StateKey) -> list[StateKey]:
+    """Every state reachable in one move, using the engine's own move set."""
+    set_state(engine, key)
+    engine.propensity()
+    proposals = [
+        ("form", slot, engine._slot_helix[slot])
         for slot in range(engine.n_slots)
         if engine._fen.value(slot) > 0.0 and engine._slot_helix[slot] is not None
-    ]
-    dynamic = [m for m in engine._dyn if m.rate > 0.0]
-    for slot, helix in forms:
-        out.append(key | {(engine._slot_stem[slot], helix.i, helix.j, helix.length)})
-    for move in dynamic:
-        set_state(engine, key)
-        engine.propensity()
-        live = [
-            m
-            for m in engine._dyn
-            if m.kind == move.kind and m.stem == move.stem and m.helix == move.helix
-        ]
-        if not live:
-            continue
-        engine.apply(live[0])
-        out.append(state_key(engine))
+    ] + [(m.kind, m.stem, m.helix) for m in engine._dyn if m.rate > 0.0]
+
+    out: list[StateKey] = []
+    for kind, ident, helix in proposals:
+        target = _move_destination(engine, key, kind, ident, helix)
+        if target is not None:
+            out.append(target)
     return out
 
 
@@ -139,29 +176,17 @@ def outgoing_rates(engine, key: StateKey) -> dict:
     out: dict[StateKey, float] = {}
     set_state(engine, key)
     engine.propensity()
-    for slot in range(engine.n_slots):
-        rate = engine._fen.value(slot)
-        helix = engine._slot_helix[slot]
-        if rate > 0.0 and helix is not None:
-            target = frozenset(
-                set(key) | {(engine._slot_stem[slot], helix.i, helix.j, helix.length)}
-            )
-            out[target] = out.get(target, 0.0) + rate
-    for move in list(engine._dyn):
-        if move.rate <= 0.0:
+    proposals = [
+        ("form", slot, engine._slot_helix[slot], engine._fen.value(slot))
+        for slot in range(engine.n_slots)
+        if engine._fen.value(slot) > 0.0 and engine._slot_helix[slot] is not None
+    ] + [(m.kind, m.stem, m.helix, m.rate) for m in engine._dyn if m.rate > 0.0]
+
+    for kind, ident, helix, rate in proposals:
+        target = _move_destination(engine, key, kind, ident, helix)
+        if target is None:
             continue
-        set_state(engine, key)
-        engine.propensity()
-        live = [
-            m
-            for m in engine._dyn
-            if m.kind == move.kind and m.stem == move.stem and m.helix == move.helix
-        ]
-        if not live:
-            continue
-        engine.apply(live[0])
-        target = state_key(engine)
-        out[target] = out.get(target, 0.0) + move.rate
+        out[target] = out.get(target, 0.0) + rate
     return out
 
 

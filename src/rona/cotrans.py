@@ -30,7 +30,7 @@ from typing import Sequence
 from .energy.evaluator import FoldingEnergy
 from .energy.model import NearestNeighbourModel
 from .energy.pseudoknot import PseudoknotModel
-from .kinetics import KineticEngine, RateModel
+from .kinetics import BREATHE_MODE, HELIX_MODE, LUMPED_MODE, KineticEngine, RateModel
 from .moves import build_moveset
 from .seq import encode, normalise
 
@@ -103,6 +103,10 @@ class SimulationConfig:
     transcription: TranscriptionSchedule | None = field(
         default_factory=TranscriptionSchedule
     )
+    #: Move set: ``helix`` (whole helices plus zipping), ``breathe``
+    #: (base-pair resolution), or ``lumped`` (the window degree of freedom
+    #: removed - see ``docs/lumping.md``).
+    mode: str = HELIX_MODE
     min_helix: int = 3
     nucleation_size: int = 3
     min_loop: int = 3
@@ -230,7 +234,14 @@ def simulate_trajectory(
         t_end, config.frames, config.grid
     )
 
-    engine = KineticEngine(energy, moveset, config.rates, pk_model=config.pseudoknots)
+    engine = KineticEngine(
+        energy,
+        moveset,
+        config.rates,
+        pk_model=config.pseudoknots,
+        mode=config.mode,
+        min_helix=config.min_helix,
+    )
     state = engine.state
     length = initial_length
     engine.grow(length, footprint if length < n else 0)

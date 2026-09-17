@@ -277,6 +277,7 @@ def run_rona(
         rates=base.rates,
         pseudoknots=base.pseudoknots,
         transcription=schedule,
+        mode=base.mode,
         min_helix=base.min_helix,
         nucleation_size=base.nucleation_size,
         min_loop=base.min_loop,

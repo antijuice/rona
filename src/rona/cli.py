@@ -24,7 +24,7 @@ from .cotrans import (
 )
 from .energy.pseudoknot import PseudoknotModel
 from .ensemble import simulate_ensemble
-from .kinetics import HELIX_MODE, MOVE_SETS, RateModel
+from .kinetics import HELIX_MODE, LUMPED_MODE, MOVE_SETS, RateModel
 from .moves import build_moveset
 from .seq import normalise, read_fasta
 
@@ -93,6 +93,7 @@ def _build_config(args) -> SimulationConfig:
         ),
         pseudoknots=pk,
         transcription=schedule,
+        mode=args.mode,
         min_helix=args.min_helix,
         nucleation_size=args.nucleation,
         max_span=args.max_span,
@@ -112,8 +113,12 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
                        help="dangling-end model (default 2, as in ViennaRNA)")
 
     kinetics = parser.add_argument_group("kinetics")
-    kinetics.add_argument("--mode", choices=MOVE_SETS, default=HELIX_MODE,
-                          help="move set: whole-helix (default) or base-pair zipping")
+    kinetics.add_argument("--mode", choices=MOVE_SETS,
+                          default=HELIX_MODE,
+                          help="move set: 'helix' (default, whole helices plus "
+                               "zipping), 'breathe' (base-pair resolution), or "
+                               "'lumped' (window degree of freedom removed; "
+                               "~100x faster, see docs/lumping.md)")
     kinetics.add_argument("--k-nucleate", type=float, default=1e5, metavar="HZ",
                           help="helix nucleation attempt frequency (default 1e5/s)")
     kinetics.add_argument("--k-zip", type=float, default=1e6, metavar="HZ",

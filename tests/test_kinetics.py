@@ -48,7 +48,13 @@ def test_fenwick_total_and_sampling(size):
 
 
 @pytest.mark.parametrize(
-    "sequence,mode,pk", [("GCGCAAAAGCGCAAAAGCGC", "helix", False)]
+    "sequence,mode,pk",
+    [
+        ("GCGCAAAAGCGCAAAAGCGC", "helix", False),
+        # lumped mode reaches the same distribution in far fewer events,
+        # because the events that do nothing but slide a helix end are gone
+        ("GCGCAAAAGCGCAAAAGCGC", "lumped", False),
+    ],
 )
 def test_stationary_distribution_is_boltzmann(sequence, mode, pk):
     engine = make_engine(sequence, mode=mode, pk=pk)

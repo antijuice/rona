@@ -62,7 +62,9 @@ MAX_EXPONENT = 400.0
 
 HELIX_MODE = "helix"
 BREATHE_MODE = "breathe"
-MOVE_SETS = (HELIX_MODE, BREATHE_MODE)
+#: Window degree of freedom removed; see :mod:`rona.lumped` and docs/lumping.md.
+LUMPED_MODE = "lumped"
+MOVE_SETS = (HELIX_MODE, BREATHE_MODE, LUMPED_MODE)
 
 
 class Fenwick:
@@ -270,7 +272,7 @@ class KineticEngine:
         self.state = FoldingState(n_total=self.n)
 
         stems = moveset.stems
-        if mode == HELIX_MODE:
+        if mode in (HELIX_MODE, LUMPED_MODE):
             self.n_slots = len(stems)
             self._slot_stem = list(range(len(stems)))
             self._slot_max_pos = [s.j for s in stems]
@@ -300,7 +302,7 @@ class KineticEngine:
         self._slots_by_pos: list[list[int]] = [[] for _ in range(self.n)]
         for slot in range(self.n_slots):
             stem = stems[self._slot_stem[slot]]
-            if mode == HELIX_MODE:
+            if mode in (HELIX_MODE, LUMPED_MODE):
                 positions = range(stem.length)
                 touch = [
                     p
@@ -332,6 +334,7 @@ class KineticEngine:
         # nothing; once a pseudoknot forms the two diverge and the core keeps
         # its loop decomposition (and therefore its O(loop) deltas).
         self._core_pt: list[int] = self.state.pt
+        self._owner: list[int] = [-1] * self.n
         self._pk_regions: tuple[tuple[int, int], ...] = ()
         self._pk_keys: set[tuple[int, int, int]] = set()
         self._pk_helices: tuple[Helix, ...] = ()
@@ -355,6 +358,8 @@ class KineticEngine:
         # the exterior loop just gained a nucleotide: every helix end sitting in
         # it has a new dangling-end context
         self._touch(loop_positions(st.pt, None, st.available))
+        if self.mode == LUMPED_MODE:
+            self._recanonicalise()
         self._rebuild_core()
         self._dyn_dirty = True
 
@@ -457,6 +462,12 @@ class KineticEngine:
             own_lo1 = own_hi1 = own_lo2 = own_hi2 = -1
         stem = self.moveset.stems[stem_index]
 
+        if self.mode == LUMPED_MODE:
+            # the window is a pure function of the stem set, not of occupancy
+            if ignore_own:
+                return own if self._lumped_melt_ok(stem_index) else None
+            return self._lumped_form_window(stem_index)
+
         if self.mode == BREATHE_MODE:
             helix = self.moveset.helix(slot)
             if helix.j >= avail:
@@ -483,6 +494,115 @@ class KineticEngine:
         if best_len < self.min_helix:
             return None
         return Helix(stem.i + best_off, stem.j - best_off, best_len)
+
+    # ------------------------------------------------------------------
+    # lumped mode: windows are a function of the stem set
+    # ------------------------------------------------------------------
+    def _canonical(self, stems) -> dict[int, Helix]:
+        from .lumped import canonical_windows
+
+        return canonical_windows(
+            self.moveset, stems, self.state.available, self.min_helix
+        )
+
+    def _rebuild_owner(self) -> None:
+        """``position -> the stem occupying it``, or -1.
+
+        The canonical placement lays stems down in increasing index, so which
+        stem owns a nucleotide is exactly what decides whether a candidate is
+        blocked there.  Keeping it as an array turns each candidate's placement
+        into a scan of its own ladder, instead of a placement of the whole
+        structure - which was half the cost of this mode.
+        """
+        owner = [-1] * self.n
+        for index, helix in self.state.formed.items():
+            for position in helix.positions():
+                owner[position] = index
+        self._owner = owner
+
+    def _lumped_form_window(self, stem_index: int) -> Helix | None:
+        """Window stem ``stem_index`` would take, or ``None`` if it may not form.
+
+        A stem may form only when the canonical placement of ``S + {s}`` leaves
+        every other window exactly where it was.  That makes FORM the exact
+        inverse of MELT (the condition is symmetric under adding or removing
+        ``s``), and it makes the energy change loop-local, so the incremental
+        delta is still valid.  No state is lost by the restriction: any valid
+        set is still reachable by forming its stems in increasing index order,
+        since the canonical placement of a stem depends only on stems of lower
+        index.
+
+        Placement is read off the owner array: stems of lower index are already
+        down and block, stems of higher index are not yet placed and do not.
+        If the resulting window then lands on one of those higher-index helices,
+        it would displace it, and the move does not exist.
+        """
+        st = self.state
+        if stem_index in st.formed:
+            return None
+        owner = self._owner
+        stem = self.moveset.stems[stem_index]
+        avail = st.available
+        best_len = best_off = run = start = 0
+        for k in range(stem.length):
+            a, b = stem.i + k, stem.j - k
+            own_a, own_b = owner[a], owner[b]
+            if (
+                b < avail
+                and (own_a < 0 or own_a > stem_index)
+                and (own_b < 0 or own_b > stem_index)
+            ):
+                if run == 0:
+                    start = k
+                run += 1
+                if run > best_len:
+                    best_len, best_off = run, start
+            else:
+                run = 0
+        if best_len < self.min_helix:
+            return None
+        i, j = stem.i + best_off, stem.j - best_off
+        for k in range(best_len):
+            if owner[i + k] >= 0 or owner[j - k] >= 0:
+                return None
+        return Helix(i, j, best_len)
+
+    def _lumped_melt_ok(self, stem_index: int) -> bool:
+        """Whether melting ``stem_index`` is the exact inverse of forming it.
+
+        Freeing a helix's nucleotides can only let stems of *higher* index grow
+        - lower ones are placed before it and never saw it - so those are the
+        only windows that have to be re-derived.
+        """
+        st = self.state
+        owner = self._owner
+        for other, helix in st.formed.items():
+            if other <= stem_index:
+                continue
+            stem = self.moveset.stems[other]
+            avail = st.available
+            best_len = best_off = run = start = 0
+            for k in range(stem.length):
+                a, b = stem.i + k, stem.j - k
+                own_a, own_b = owner[a], owner[b]
+                if (
+                    b < avail
+                    and (own_a < 0 or own_a >= other or own_a == stem_index)
+                    and (own_b < 0 or own_b >= other or own_b == stem_index)
+                ):
+                    if run == 0:
+                        start = k
+                    run += 1
+                    if run > best_len:
+                        best_len, best_off = run, start
+                else:
+                    run = 0
+            if (
+                best_len != helix.length
+                or stem.i + best_off != helix.i
+            ):
+                return False
+        return True
 
     def _form_dg(self, helix: Helix) -> tuple[float, bool]:
         """``(dG, crossed)`` for forming ``helix``.
@@ -575,7 +695,7 @@ class KineticEngine:
                 (helix.i, helix.j, helix.length) in self._pk_keys
                 or self._crossed_by_pseudoknot(helix)
             )
-            if self.mode == HELIX_MODE:
+            if self.mode in (HELIX_MODE, LUMPED_MODE):
                 # A helix may only melt when it is the window that forming it
                 # again would produce, so melt and form are exact inverses.
                 # Otherwise the state would be a one-way door and detailed
@@ -598,6 +718,11 @@ class KineticEngine:
                 out.append(
                     Move(MELT, helix, stem_index, dg, self.rates.rate(MELT, dg, kT))
                 )
+            if self.mode == LUMPED_MODE:
+                # the window is a function of the stem set, so there is nothing
+                # to zip: melting is the only dynamic move
+                self._dyn_cache[stem_index] = out
+                continue
             offset = helix.i - stem.i
             if offset > 0:
                 pair = Helix(helix.i - 1, helix.j + 1, 1)
@@ -719,6 +844,8 @@ class KineticEngine:
         if not self._crossing and self._core_pt is not self.state.pt:
             # the caller replaced the pair table rather than mutating it
             self._core_pt = self.state.pt
+        if self.mode == LUMPED_MODE:
+            self._rebuild_owner()
         self._refresh_slots()
         self._refresh_dynamic()
         return self._fen.total() + self._dyn_total
@@ -794,12 +921,44 @@ class KineticEngine:
         # globally-dependent candidate scores cannot survive a structural change
         self._dirty.update(self._crossing_slots)
         self._dyn_dirty_stems.add(move.stem)
+        if self.mode == LUMPED_MODE:
+            self._recanonicalise()
         had_crossing = bool(self._crossing)
         self._update_crossings()
         if bool(self._crossing) != had_crossing or self._crossing:
             # pseudoknot penalties are not loop-local, so every helix is stale
             self._dyn_dirty = True
         self._rebuild_core()
+
+    def _recanonicalise(self) -> None:
+        """Re-derive every window from the stem set, as lumped mode requires.
+
+        Without zipping, a helix would otherwise stay at whatever length it had
+        when it formed - the stranding defect.  Here the window is a pure
+        function of the set of formed stems, so it is simply recomputed.  In
+        practice nothing but the stem just touched changes, because placement
+        only interacts between stems that share nucleotides; when something else
+        does move, every cached rate is dropped.
+        """
+        from .lumped import canonical_windows
+
+        st = self.state
+        fresh = canonical_windows(
+            self.moveset, st.formed.keys(), st.available, self.min_helix
+        )
+        if fresh == st.formed:
+            return
+        for helix in st.formed.values():
+            for a, b in helix.pairs:
+                st.pt[a] = st.pt[b] = -1
+        st.formed = fresh
+        for helix in fresh.values():
+            for a, b in helix.pairs:
+                st.pt[a], st.pt[b] = b, a
+        st.energy = self.energy.energy(st.helices(), st.available)
+        self._dirty = set(range(self.n_slots))
+        self._dyn_dirty = True
+        self._dyn_cache.clear()
 
     def _update_crossings(self) -> None:
         items = list(self.state.formed.items())
