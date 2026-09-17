@@ -195,8 +195,20 @@ class Helix:
         return frozenset(self.positions())
 
     def crosses(self, other: "Helix") -> bool:
-        """True if any pair of ``self`` crosses any pair of ``other``."""
-        return any(_crosses(p, q) for p in self.pairs for q in other.pairs)
+        """True if any pair of ``self`` crosses any pair of ``other``.
+
+        For two disjoint ladders this reduces to an O(1) test.  Each arm of
+        ``other`` lies either 5' of this helix, between its two arms, or 3' of
+        it - it cannot lie *within* an arm, because helices never share
+        nucleotides.  The two helices cross exactly when one arm of ``other``
+        falls between this helix's arms and the other does not.
+        """
+        if self.occupies() & other.occupies():
+            return any(_crosses(p, q) for p in self.pairs for q in other.pairs)
+        inner_a, inner_b = self.inner
+        left_mid = inner_a < other.i < inner_b
+        right_mid = inner_a < other.j < inner_b
+        return left_mid != right_mid
 
     def conflicts(self, other: "Helix") -> bool:
         """True if the two helices would need to share a nucleotide."""
