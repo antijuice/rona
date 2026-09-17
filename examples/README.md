@@ -18,3 +18,11 @@ rona trajectory examples/sequences/kinetic_trap.fa --changes-only
 `01_kinetic_trap.py` is the one to run first. It is the shortest demonstration
 that this tool answers a different question from an equilibrium folder, and the
 claim it makes is checkable against ViennaRNA.
+
+`05_timescale_separation.py` checks that the coarse folding result does not
+depend on how fast zipping is — the assumption that lets `k_zip` be lowered for
+tractability.
+
+`06_shape_benchmark.py` scores rona, stepwise equilibrium and (optionally)
+DrTransformer against public cotranscriptional SHAPE-seq data. It downloads the
+data itself. About 55 minutes on four cores; use `-n 4` for a quick look.

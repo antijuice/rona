@@ -207,8 +207,35 @@ with `--no-pseudoknots`.
 
 ## Validation
 
-The load-bearing test is that the simulator reproduces equilibrium when it
-should. For four fixed-length systems — including one with pseudoknots enabled
+### Against experiment
+
+Cotranscriptional SHAPE-seq measures, for every transcript length, how reactive
+each nucleotide is. That is a length × position observable, exactly the shape of
+what a cotranscriptional simulation predicts, so it is the most direct public
+test available. Scored against the *B. cereus* crcB fluoride riboswitch probing
+matrix from the [RNA Mapping Database](https://rmdb.stanford.edu/)
+(108 transcript lengths, 127 nt, 6,195 comparable points):
+
+| method | Spearman ρ | median per-length ρ | AUROC |
+|---|---|---|---|
+| **rona** (16 trajectories) | **+0.289** | +0.311 | **+0.642** |
+| stepwise equilibrium (ViennaRNA per prefix) | +0.249 | **+0.313** | 0.633 |
+| DrTransformer 2.x | +0.223 | +0.239 | 0.575 |
+
+`python examples/06_shape_benchmark.py` reproduces it; the script downloads the
+data itself.
+
+Three caveats that matter. The correlations are modest for *everything* — SHAPE
+reports 2′-OH flexibility, not base pairing. The margins between the three are
+small, and this is one RNA under one condition. And the roadblock protocol
+probes *stalled* complexes, which sits much closer to per-length equilibrium
+than to free elongation, so this dataset should if anything favour the
+equilibrium baseline. See `docs/validation.md`.
+
+### Against its own equilibrium
+
+The load-bearing internal test is that the simulator reproduces equilibrium when
+it should. For four fixed-length systems — including one with pseudoknots enabled
 and one in `breathe` mode — the time-weighted occupancy of a 250 000-event run
 matches the exact Boltzmann distribution over the fully enumerated reachable
 state space to within **0.05 total-variation distance**.
@@ -273,10 +300,9 @@ Worth being straight about.
   pseudoknot parameters; the topology penalty here is a transparent functional
   form with tunable constants, not a measured parameter set. Treat pseudoknot
   populations as qualitative.
-* **Not yet validated against experiment.** The harness and the data are in
-  place (`docs/validation.md`), and the baselines are measured, but rona's own
-  number on the fluoride-riboswitch probing data is blocked on the speed problem
-  above. Nothing here should be taken as experimentally benchmarked.
+* **One experimental benchmark, narrow margins.** rona comes out ahead on the
+  fluoride-riboswitch probing data, but on one RNA under one condition and by a
+  small amount. Treat it as encouraging, not as established.
 * **No tertiary structure, no ions beyond the implicit 1 M Na⁺ of the Turner
   parameters, no ligands, no proteins.**
 * **The polymerase is a moving boundary, nothing more.** No backtracking, no
