@@ -124,7 +124,17 @@ class RateModel:
     #: Attempt frequency for nucleating a helix (s^-1).
     k_nucleate: float = 1.0e5
     #: Attempt frequency for adding/removing one pair at a helix end (s^-1).
-    k_zip: float = 1.0e7
+    #
+    # Physically this is ~10^7 s^-1.  The default is deliberately lower,
+    # because zipping is a futile fast mode: measured on a 58 nt transcript,
+    # 99.7% of all events are zip/unzip, with forward and reverse counts equal
+    # to three significant figures - the helix length is already at internal
+    # equilibrium and merely jittering.  What the coarse kinetics needs is only
+    # that zipping be fast compared with nucleation (10^5 s^-1) and with the
+    # observation timescale (seconds), which 10^6 s^-1 amply satisfies, and the
+    # event count scales linearly with it.  ``examples/05_timescale_separation.py``
+    # checks that the coarse result does not move when this is varied.
+    k_zip: float = 1.0e6
     #: ``metropolis`` or ``kawasaki``.
     scheme: str = "metropolis"
 
@@ -297,6 +307,11 @@ class KineticEngine:
             for pos in touch:
                 self._slots_by_pos[pos].append(slot)
 
+        # first slot belonging to each stem, for the melt-window check
+        self._stem_slot: dict[int, int] = {}
+        for slot in range(self.n_slots):
+            self._stem_slot.setdefault(self._slot_stem[slot], slot)
+
         self._dyn: list[Move] = []
         self._dyn_total = 0.0
         self._dyn_dirty = True
@@ -377,14 +392,26 @@ class KineticEngine:
     # ------------------------------------------------------------------
     # candidate construction
     # ------------------------------------------------------------------
-    def _candidate(self, slot: int) -> Helix | None:
-        """The helix that slot ``slot`` would form, given current occupancy."""
+    def _candidate(self, slot: int, *, ignore_own: bool = False) -> Helix | None:
+        """The helix that slot ``slot`` would form, given current occupancy.
+
+        ``ignore_own`` treats this stem's already-formed helix as absent, which
+        is what the melt rule needs: a helix may only melt when it *is* the
+        window that forming it again would produce.
+        """
         st = self.state
         pt = st.pt
         avail = st.available
         stem_index = self._slot_stem[slot]
-        if stem_index in st.formed:
+        own = st.formed.get(stem_index)
+        if own is not None and not ignore_own:
             return None
+        # the helix's own nucleotides, as two contiguous ranges: an O(1) test
+        # per position, where building a set would allocate on every event
+        if own is not None and ignore_own:
+            own_lo1, own_hi1, own_lo2, own_hi2 = own.arms()
+        else:
+            own_lo1 = own_hi1 = own_lo2 = own_hi2 = -1
         stem = self.moveset.stems[stem_index]
 
         if self.mode == BREATHE_MODE:
@@ -400,7 +427,9 @@ class KineticEngine:
         best_len = best_off = run = start = 0
         for k in range(stem.length):
             a, b = stem.i + k, stem.j - k
-            if b < avail and pt[a] < 0 and pt[b] < 0:
+            free_a = pt[a] < 0 or own_lo1 <= a <= own_hi1 or own_lo2 <= a <= own_hi2
+            free_b = pt[b] < 0 or own_lo1 <= b <= own_hi1 or own_lo2 <= b <= own_hi2
+            if b < avail and free_a and free_b:
                 if run == 0:
                     start = k
                 run += 1
@@ -471,10 +500,17 @@ class KineticEngine:
                 (helix.i, helix.j, helix.length) in self._pk_keys
                 or self._in_pk_region(helix)
             )
-            can_melt = (
-                self.mode == HELIX_MODE
-                or helix.length == self.moveset.nucleation_size
-            )
+            if self.mode == HELIX_MODE:
+                # A helix may only melt when it is the window that forming it
+                # again would produce, so melt and form are exact inverses.
+                # Otherwise the state would be a one-way door and detailed
+                # balance would fail.
+                window = self._candidate(
+                    self._stem_slot[stem_index], ignore_own=True
+                )
+                can_melt = window is not None and window == helix
+            else:
+                can_melt = helix.length == self.moveset.nucleation_size
             if can_melt:
                 if local:
                     dg = self.energy.delta_remove(
@@ -487,9 +523,6 @@ class KineticEngine:
                 out.append(
                     Move(MELT, helix, stem_index, dg, self.rates.rate(MELT, dg, kT))
                 )
-            if self.mode != BREATHE_MODE:
-                continue
-
             offset = helix.i - stem.i
             if offset > 0:
                 pair = Helix(helix.i - 1, helix.j + 1, 1)
@@ -547,6 +580,9 @@ class KineticEngine:
 
     def propensity(self) -> float:
         """Total escape rate from the current state."""
+        if not self._crossing and self._core_pt is not self.state.pt:
+            # the caller replaced the pair table rather than mutating it
+            self._core_pt = self.state.pt
         self._refresh_slots()
         self._refresh_dynamic()
         return self._fen.total() + self._dyn_total

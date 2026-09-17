@@ -116,7 +116,7 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
                           help="move set: whole-helix (default) or base-pair zipping")
     kinetics.add_argument("--k-nucleate", type=float, default=1e5, metavar="HZ",
                           help="helix nucleation attempt frequency (default 1e5/s)")
-    kinetics.add_argument("--k-zip", type=float, default=1e7, metavar="HZ",
+    kinetics.add_argument("--k-zip", type=float, default=1e6, metavar="HZ",
                           help="base-pair zipping attempt frequency (default 1e7/s)")
     kinetics.add_argument("--scheme", choices=("metropolis", "kawasaki"),
                           default="metropolis", help="detailed-balance rate rule")

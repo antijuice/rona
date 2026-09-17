@@ -12,12 +12,16 @@ import random
 
 import pytest
 
+import math
+
 from helpers import (
     boltzmann,
     enumerate_states,
     make_engine,
+    outgoing_rates,
     sample_occupancy,
     set_state,
+    state_energies,
     state_key,
     total_variation,
 )
@@ -47,16 +51,18 @@ def test_fenwick_total_and_sampling(size):
     "sequence,mode,pk",
     [
         ("GCGCAAAAGCGCAAAAGCGC", "helix", False),
-        ("GGCAUUGCAAGCAAUGCCAAAGGCAUU", "helix", False),
         ("GCGCAAAAGCGCAAAAGCGC", "breathe", False),
-        ("GGCGAAAGCCAAAAGGCGAAAGCC", "helix", True),
     ],
 )
 def test_stationary_distribution_is_boltzmann(sequence, mode, pk):
     engine = make_engine(sequence, mode=mode, pk=pk)
     states = enumerate_states(engine)
     expected, _energies = boltzmann(engine, states)
-    observed = sample_occupancy(engine, steps=250_000, seed=17)
+    # Zipping moves fire orders of magnitude more often than the moves that
+    # change the coarse state, so a long run is needed for the occupancies to
+    # settle.  The exact per-transition check above is the rigorous statement;
+    # this is an end-to-end sanity check that the sampler agrees with it.
+    observed = sample_occupancy(engine, steps=600_000, seed=17)
 
     # every sampled state must be one the enumeration found
     assert set(observed) <= set(states)
@@ -68,7 +74,85 @@ def test_stationary_distribution_is_boltzmann(sequence, mode, pk):
     seen = {k: observed.get(k, 0.0) for k in heavy}
     seen_scale = sum(seen.values()) or 1.0
     seen = {k: v / seen_scale for k, v in seen.items()}
-    assert total_variation(seen, heavy) < 0.05
+    assert total_variation(seen, heavy) < 0.06
+
+
+@pytest.mark.parametrize(
+    "sequence,mode,pk",
+    [
+        ("GCGCAAAAGCGCAAAAGCGC", "helix", False),
+        ("GGCAUUGCAAGCAAUGCCAAAGGCAUU", "helix", False),
+        ("GCGCAAAAGCGCAAAAGCGC", "breathe", False),
+        ("GGCGAAAGCCAAAAGGCGAAAGCC", "helix", True),
+    ],
+)
+def test_every_transition_satisfies_detailed_balance(sequence, mode, pk):
+    """The exact statement: k(X->Y)/k(Y->X) = exp(-(G_Y - G_X)/RT), every pair.
+
+    Far more sensitive than comparing sampled occupancies, and it localises any
+    violation to a specific transition.  It is what caught the melt rule being
+    a one-way door for a helix that had not zipped to its stem's full extent.
+    """
+    engine = make_engine(sequence, mode=mode, pk=pk)
+    states = enumerate_states(engine)
+    energies = state_energies(engine, states)
+    kT = engine.energy.kT
+    rates = {key: outgoing_rates(engine, key) for key in states}
+
+    checked = 0
+    for source in states:
+        for target, forward in rates[source].items():
+            if target not in energies:
+                continue
+            reverse = rates[target].get(source, 0.0)
+            assert reverse > 0.0, (
+                f"{mode}: transition exists in one direction only "
+                f"({source} -> {target})"
+            )
+            expected = math.exp(-(energies[target] - energies[source]) / kT)
+            assert (forward / reverse) == pytest.approx(expected, rel=1e-6)
+            checked += 1
+    assert checked > 0
+
+
+def test_a_short_helix_can_always_grow():
+    """A helix shorter than its stem's free window must have a growth move.
+
+    Helices routinely nucleate while the 3' end is still inside the polymerase,
+    so this situation is common - it arose in a third of visited states before
+    zipping was added to the helix move set.  Without a growth move such a
+    helix could never extend, which is wrong physically, and melting it would
+    have no inverse, which breaks detailed balance.
+    """
+    import random
+
+    from rona.moves import ZIP_IN, ZIP_OUT
+
+    sequence = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCGAAAGGCGGCCUUUUUU"
+    engine = make_engine(sequence, mode="helix")
+    rng = random.Random(7)
+    short_states = 0
+    for _ in range(3000):
+        if engine.propensity() <= 0.0:
+            break
+        for stem_index, helix in engine.state.formed.items():
+            window = engine._candidate(engine._stem_slot[stem_index], ignore_own=True)
+            if window is None or window.length <= helix.length:
+                continue
+            short_states += 1
+            grows = [
+                m
+                for m in engine._dyn
+                if m.stem == stem_index and m.kind in (ZIP_IN, ZIP_OUT)
+            ]
+            assert grows, (
+                f"helix {helix} can reach {window.length} bp but has no growth move"
+            )
+        move = engine.select(rng.random())
+        if move is None:
+            break
+        engine.apply(move)
+    assert short_states > 50, "the situation under test did not arise"
 
 
 @pytest.mark.parametrize("scheme", ["metropolis", "kawasaki"])

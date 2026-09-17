@@ -39,6 +39,8 @@ def set_state(engine, key: StateKey) -> None:
     engine._dirty = set(range(engine.n_slots))
     engine._dyn_dirty = True
     engine._update_crossings()
+    # st.pt was replaced, so every derived table has to be rebuilt
+    engine._rebuild_core()
     st.energy = engine.energy.energy(st.helices(), st.available)
 
 
@@ -122,6 +124,49 @@ def sample_occupancy(engine, *, steps: int, seed: int) -> dict:
             break
         engine.apply(move)
     return {k: v / total_time for k, v in dwell.items()}
+
+
+def outgoing_rates(engine, key: StateKey) -> dict:
+    """Every transition out of ``key``, as ``{destination: rate}``.
+
+    Reads the engine's own propensities rather than recomputing them, so the
+    check below tests what the simulation actually uses.
+    """
+    out: dict[StateKey, float] = {}
+    set_state(engine, key)
+    engine.propensity()
+    for slot in range(engine.n_slots):
+        rate = engine._fen.value(slot)
+        helix = engine._slot_helix[slot]
+        if rate > 0.0 and helix is not None:
+            target = frozenset(
+                set(key) | {(engine._slot_stem[slot], helix.i, helix.j, helix.length)}
+            )
+            out[target] = out.get(target, 0.0) + rate
+    for move in list(engine._dyn):
+        if move.rate <= 0.0:
+            continue
+        set_state(engine, key)
+        engine.propensity()
+        live = [
+            m
+            for m in engine._dyn
+            if m.kind == move.kind and m.stem == move.stem and m.helix == move.helix
+        ]
+        if not live:
+            continue
+        engine.apply(live[0])
+        target = state_key(engine)
+        out[target] = out.get(target, 0.0) + move.rate
+    return out
+
+
+def state_energies(engine, states) -> dict:
+    energies = {}
+    for key in states:
+        set_state(engine, key)
+        energies[key] = engine.state.energy
+    return energies
 
 
 def total_variation(observed, expected) -> float:
