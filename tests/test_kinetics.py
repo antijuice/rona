@@ -166,19 +166,45 @@ def test_rate_rule_satisfies_detailed_balance(scheme):
         assert zf / zr == pytest.approx(pow(2.718281828459045, -dg / kT), rel=1e-9)
 
 
-def test_energy_tracking_matches_full_recomputation():
-    """The incrementally tracked energy must not drift over a long run."""
-    engine = make_engine("GGCGAAAGCCAAAAGGCGAAAGCCUUUUGCAUGCAAAGCAUGC", pk=True)
+@pytest.mark.parametrize(
+    "sequence",
+    [
+        "GGCGAAAGCCAAAAGGCGAAAGCCUUUUGCAUGCAAAGCAUGC",
+        # reaches pseudoknotted states quickly, which is where the fast paths
+        # for the energy delta are hardest to get right
+        "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCGAAAGGCGGCCUUUUUU",
+    ],
+)
+def test_energy_tracking_matches_full_recomputation(sequence):
+    """The incrementally tracked energy must equal a full recomputation.
+
+    This is the check that catches a wrong fast path, and it has caught three:
+    delta_full silently returned zero when handed a zipped base pair rather
+    than a whole helix; candidates that cross the structure kept a cached score
+    across structural changes they depend on; and the pseudoknot correction
+    initially ignored that zipping can create a crossing the parent helix does
+    not have. Each showed up here as drift, none as a test failure elsewhere.
+    """
+    engine = make_engine(sequence, pk=True)
     rng = random.Random(4)
-    for _ in range(4000):
+    pseudoknotted_states = 0
+    steps = 0
+    for _ in range(3000):
         if engine.propensity() <= 0.0:
             break
         move = engine.select(rng.random())
         if move is None:
             break
         engine.apply(move)
+        steps += 1
+        if engine.has_pseudoknot():
+            pseudoknotted_states += 1
         exact = engine.energy.energy(engine.state.helices(), engine.state.available)
         assert engine.state.energy == pytest.approx(exact, abs=1e-9)
+    assert steps > 500
+    if "GGCGCGG" in sequence:
+        # guard against the test passing by never exercising the hard path
+        assert pseudoknotted_states > 0, "no pseudoknotted state was visited"
 
 
 def test_state_reconstruction_round_trips():

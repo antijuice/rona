@@ -288,6 +288,11 @@ class KineticEngine:
         self._slot_helix: list[Helix | None] = [None] * self.n_slots
         self._slot_dg: list[float] = [float("inf")] * self.n_slots
         self._dirty: set[int] = set()
+        # Candidates that cross the current structure are scored by full
+        # evaluation, which depends on the whole structure rather than on one
+        # loop.  Loop-local invalidation cannot see that, so they are
+        # re-scored after every move.  There are few of them.
+        self._crossing_slots: set[int] = set()
         self._active = 0
         self._is_active = bytearray(self.n_slots)
 
@@ -312,6 +317,12 @@ class KineticEngine:
         for slot in range(self.n_slots):
             self._stem_slot.setdefault(self._slot_stem[slot], slot)
 
+        # Dynamic (melt / zip / unzip) moves are cached per stem.  Almost
+        # every event is a zip on one helix, which leaves every other helix's
+        # moves untouched; rebuilding them all was costing ~h energy
+        # evaluations per event for no reason.
+        self._dyn_cache: dict[int, list[Move]] = {}
+        self._dyn_dirty_stems: set[int] = set()
         self._dyn: list[Move] = []
         self._dyn_total = 0.0
         self._dyn_dirty = True
@@ -323,6 +334,7 @@ class KineticEngine:
         self._core_pt: list[int] = self.state.pt
         self._pk_regions: tuple[tuple[int, int], ...] = ()
         self._pk_keys: set[tuple[int, int, int]] = set()
+        self._pk_helices: tuple[Helix, ...] = ()
 
     # ------------------------------------------------------------------
     # activation and invalidation
@@ -365,6 +377,7 @@ class KineticEngine:
             self._core_pt = st.pt
             self._pk_regions = ()
             self._pk_keys = set()
+            self._pk_helices = ()
             return
         helices = st.helices()
         core, pk = self.energy.split(helices)
@@ -382,6 +395,36 @@ class KineticEngine:
             self._touch(range(lo, min(hi + 1, self.n)))
         self._pk_regions = tuple(regions)
         self._pk_keys = {(h.i, h.j, h.length) for h in pk}
+        self._pk_helices = tuple(pk)
+
+    def _pk_unpaired_delta(self, helix: Helix, *, adding: bool) -> float:
+        """Change in the pseudoknot topology penalty from one helix.
+
+        A helix that crosses nothing cannot change the core/pseudoknot split,
+        nor which core helices each pseudoknot threads through, nor therefore
+        the extent of any pseudoknot region.  The only term that moves is the
+        per-unpaired-nucleotide cost, and it moves by exactly the number of the
+        helix's nucleotides that lie inside each region.  That is O(1) per
+        region, where re-deriving it from two full evaluations costs a conflict
+        graph and two O(n) energy sums.
+        """
+        regions = self._pk_regions
+        if not regions:
+            return 0.0
+        per = self.pk_model.per_unpaired
+        if per == 0.0:
+            return 0.0
+        count = 0
+        for lo, hi in regions:
+            for a, b in helix.pairs:
+                if lo <= a <= hi:
+                    count += 1
+                if lo <= b <= hi:
+                    count += 1
+        return -per * count if adding else per * count
+
+    def _crossed_by_pseudoknot(self, helix: Helix) -> bool:
+        return any(helix.crosses(other) for other in self._pk_helices)
 
     def _in_pk_region(self, helix: Helix) -> bool:
         for lo, hi in self._pk_regions:
@@ -441,27 +484,33 @@ class KineticEngine:
             return None
         return Helix(stem.i + best_off, stem.j - best_off, best_len)
 
-    def _form_dg(self, helix: Helix) -> float:
+    def _form_dg(self, helix: Helix) -> tuple[float, bool]:
+        """``(dG, crossed)`` for forming ``helix``.
+
+        ``crossed`` tells the caller the value came from a full evaluation and
+        must not be cached across a structural change.
+        """
         st = self.state
         crossing = crosses_structure(st.pt, helix.i, helix.j, st.available)
         if crossing:
             if not self.pk_model.enabled or helix.length < self.pk_model.min_helix:
-                return float("inf")
+                return float("inf"), True
             if self.pk_model.max_helices is not None:
                 _core, pk = self.energy.split(st.helices())
                 if len(pk) >= self.pk_model.max_helices:
-                    return float("inf")
-            return self.energy.delta_full(
-                st.helices(), helix, st.available, add=True, before=st.energy
+                    return float("inf"), True
+            return (
+                self.energy.delta_full(
+                    st.helices(), helix, st.available, add=True, before=st.energy
+                ),
+                True,
             )
-        if self._pk_regions and self._in_pk_region(helix):
-            return self.energy.delta_full(
-                st.helices(), helix, st.available, add=True, before=st.energy
-            )
-        # no crossing and clear of every pseudoknot region: the topology
-        # penalties are unchanged, so the core delta is the whole answer
-        return self.energy.delta_add(
-            self._core_pt, helix, st.available, nested=True
+        # the helix crosses nothing, so the split and every region are fixed;
+        # only the per-unpaired term of the topology penalty moves
+        return (
+            self.energy.delta_add(self._core_pt, helix, st.available, nested=True)
+            + self._pk_unpaired_delta(helix, adding=True),
+            False,
         )
 
     def _refresh_slots(self) -> None:
@@ -470,16 +519,28 @@ class KineticEngine:
         kT = self.energy.kT
         fen = self._fen
         active = self._is_active
+        formed = self.state.formed
+        slot_stem = self._slot_stem
         for slot in self._dirty:
+            # a dirty candidate whose stem is formed means that helix's own
+            # loop context moved, so its melt/zip rates are stale too
+            stem_index = slot_stem[slot]
+            if stem_index in formed:
+                self._dyn_dirty_stems.add(stem_index)
             if not active[slot]:
                 continue
             helix = self._candidate(slot)
             if helix is None:
                 self._slot_helix[slot] = None
                 self._slot_dg[slot] = float("inf")
+                self._crossing_slots.discard(slot)
                 fen.set(slot, 0.0)
                 continue
-            dg = self._form_dg(helix)
+            dg, crossed = self._form_dg(helix)
+            if crossed:
+                self._crossing_slots.add(slot)
+            else:
+                self._crossing_slots.discard(slot)
             self._slot_helix[slot] = helix
             self._slot_dg[slot] = dg
             fen.set(slot, self.rates.rate(FORM, dg, kT))
@@ -487,18 +548,32 @@ class KineticEngine:
 
     # ------------------------------------------------------------------
     def _refresh_dynamic(self) -> None:
-        """Melt (and, in breathe mode, zip/unzip) moves for formed helices."""
-        if not self._dyn_dirty:
-            return
+        """Melt and zip/unzip moves for formed helices, rebuilt per stem."""
         st = self.state
+        formed = st.formed
+        # drop helices that no longer exist
+        if len(self._dyn_cache) != len(formed):
+            for stem_index in list(self._dyn_cache):
+                if stem_index not in formed:
+                    del self._dyn_cache[stem_index]
+        stale = [s for s in formed if s not in self._dyn_cache]
+        self._dyn_dirty_stems.update(stale)
+        if not self._dyn_dirty_stems and not self._dyn_dirty:
+            return
+
         kT = self.energy.kT
-        out: list[Move] = []
         helices = st.helices() if self._crossing else ()
-        for stem_index, helix in st.formed.items():
+        targets = (
+            list(formed.items())
+            if self._dyn_dirty
+            else [(s, formed[s]) for s in self._dyn_dirty_stems if s in formed]
+        )
+        for stem_index, helix in targets:
+            out: list[Move] = []
             stem = self.moveset.stems[stem_index]
             local = not self._crossing or not (
                 (helix.i, helix.j, helix.length) in self._pk_keys
-                or self._in_pk_region(helix)
+                or self._crossed_by_pseudoknot(helix)
             )
             if self.mode == HELIX_MODE:
                 # A helix may only melt when it is the window that forming it
@@ -515,7 +590,7 @@ class KineticEngine:
                 if local:
                     dg = self.energy.delta_remove(
                         self._core_pt, helix, st.available, nested=True
-                    )
+                    ) + self._pk_unpaired_delta(helix, adding=False)
                 else:
                     dg = self.energy.delta_full(
                         helices, helix, st.available, add=False, before=st.energy
@@ -531,7 +606,9 @@ class KineticEngine:
                     and st.pt[pair.i] < 0
                     and st.pt[pair.j] < 0
                 ):
-                    dg = self._pair_delta(pair, add=True, local=local)
+                    dg = self._pair_delta(
+                        pair, add=True, local=local, kind=ZIP_OUT, stem=stem_index
+                    )
                     out.append(
                         Move(
                             ZIP_OUT,
@@ -545,7 +622,9 @@ class KineticEngine:
                 a, b = helix.inner
                 pair = Helix(a + 1, b - 1, 1)
                 if st.pt[pair.i] < 0 and st.pt[pair.j] < 0:
-                    dg = self._pair_delta(pair, add=True, local=local)
+                    dg = self._pair_delta(
+                        pair, add=True, local=local, kind=ZIP_IN, stem=stem_index
+                    )
                     out.append(
                         Move(
                             ZIP_IN, pair, stem_index, dg, self.rates.rate(ZIP_IN, dg, kT)
@@ -556,27 +635,84 @@ class KineticEngine:
                     (UNZIP_OUT, Helix(helix.i, helix.j, 1)),
                     (UNZIP_IN, Helix(*helix.inner, 1)),
                 ):
-                    dg = self._pair_delta(pair, add=False, local=local)
+                    dg = self._pair_delta(
+                        pair, add=False, local=local, kind=kind, stem=stem_index
+                    )
                     out.append(
                         Move(kind, pair, stem_index, dg, self.rates.rate(kind, dg, kT))
                     )
-        self._dyn = out
-        self._dyn_total = math.fsum(m.rate for m in out)
+            self._dyn_cache[stem_index] = out
+
+        self._dyn_dirty_stems.clear()
         self._dyn_dirty = False
+        self._dyn = [m for moves in self._dyn_cache.values() for m in moves]
+        self._dyn_total = math.fsum(m.rate for m in self._dyn)
 
     # ------------------------------------------------------------------
-    def _pair_delta(self, pair: Helix, *, add: bool, local: bool) -> float:
-        """Delta for a single-base-pair zip/unzip in breathe mode."""
+    @staticmethod
+    def _resulting_helix(kind: str, parent: Helix, pair: Helix) -> Helix | None:
+        """The helix that ``kind`` leaves behind, or ``None`` if it is gone."""
+        if kind == FORM:
+            return pair
+        if kind == MELT:
+            return None
+        if kind == ZIP_OUT:
+            return Helix(pair.i, pair.j, parent.length + 1)
+        if kind == ZIP_IN:
+            return Helix(parent.i, parent.j, parent.length + 1)
+        if kind == UNZIP_OUT:
+            return Helix(parent.i + 1, parent.j - 1, parent.length - 1)
+        if kind == UNZIP_IN:
+            return Helix(parent.i, parent.j, parent.length - 1)
+        raise ValueError(f"unknown move kind {kind!r}")
+
+    def _full_pair_delta(self, kind: str, stem_index: int, pair: Helix) -> float:
+        """Exact delta for a zip/unzip when the fast path does not apply.
+
+        ``delta_full`` works on a *set of helices*, and a zipped pair is not one
+        of them - it is part of a larger helix.  Passing the pair to it removed
+        nothing and silently returned zero.  The resulting helix set is built
+        explicitly here instead.
+        """
         st = self.state
+        parent = st.formed[stem_index]
+        replacement = self._resulting_helix(kind, parent, pair)
+        helices = [
+            (replacement if key == stem_index else helix)
+            for key, helix in st.formed.items()
+            if key != stem_index or replacement is not None
+        ]
+        return self.energy.energy(helices, st.available) - st.energy
+
+    def _pair_delta(
+        self, pair: Helix, *, add: bool, local: bool, kind: str = "", stem: int = -1
+    ) -> float:
+        """Delta for adding or removing one base pair at a helix end.
+
+        ``local`` describes the parent helix, but zipping adds a *new* pair
+        that can cross a pseudoknot the parent does not, which would change the
+        core/pseudoknot split and invalidate the O(1) correction.  Adding a
+        pair is therefore re-checked on its own.  Removing one cannot create a
+        crossing, so the parent's status is enough there.
+        """
+        st = self.state
+        if local and add and crosses_structure(
+            st.pt, pair.i, pair.j, st.available
+        ):
+            local = False
         if local:
             table = self._core_pt
+            correction = self._pk_unpaired_delta(pair, adding=add)
             if add:
-                return self.energy.delta_add(table, pair, st.available, nested=True)
-            return self.energy.delta_remove(table, pair, st.available, nested=True)
-        helices = st.helices()
-        return self.energy.delta_full(
-            helices, pair, st.available, add=add, before=st.energy
-        )
+                return (
+                    self.energy.delta_add(table, pair, st.available, nested=True)
+                    + correction
+                )
+            return (
+                self.energy.delta_remove(table, pair, st.available, nested=True)
+                + correction
+            )
+        return self._full_pair_delta(kind, stem, pair)
 
     def propensity(self) -> float:
         """Total escape rate from the current state."""
@@ -655,9 +791,15 @@ class KineticEngine:
 
         self._touch(loop_positions(st.pt, closing, st.available))
         st.energy += move.dg
+        # globally-dependent candidate scores cannot survive a structural change
+        self._dirty.update(self._crossing_slots)
+        self._dyn_dirty_stems.add(move.stem)
+        had_crossing = bool(self._crossing)
         self._update_crossings()
+        if bool(self._crossing) != had_crossing or self._crossing:
+            # pseudoknot penalties are not loop-local, so every helix is stale
+            self._dyn_dirty = True
         self._rebuild_core()
-        self._dyn_dirty = True
 
     def _update_crossings(self) -> None:
         items = list(self.state.formed.items())
