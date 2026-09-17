@@ -92,7 +92,9 @@ def can_pair(enc: Sequence[int], i: int, j: int, min_loop: int = 3) -> bool:
 def read_fasta(text: str) -> list[tuple[str, str]]:
     """Minimal FASTA reader returning ``(name, sequence)`` pairs.
 
-    A bare sequence with no header is accepted and named ``"seq"``.
+    The record name is the first whitespace-delimited token of the header, as
+    is conventional; anything after it is a free-text description and is
+    dropped.  A bare sequence with no header is accepted and named ``"seq"``.
     """
     records: list[tuple[str, list[str]]] = []
     for raw in text.splitlines():
@@ -100,7 +102,8 @@ def read_fasta(text: str) -> list[tuple[str, str]]:
         if not line or line.startswith((";", "#")):
             continue
         if line.startswith(">"):
-            records.append((line[1:].strip() or f"seq{len(records) + 1}", []))
+            identifier = line[1:].split(None, 1)[0] if line[1:].strip() else ""
+            records.append((identifier or f"seq{len(records) + 1}", []))
         else:
             if not records:
                 records.append(("seq", []))

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -26,6 +27,15 @@ from .ensemble import simulate_ensemble
 from .kinetics import HELIX_MODE, MOVE_SETS, RateModel
 from .moves import build_moveset
 from .seq import normalise, read_fasta
+
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_name(name: str) -> str:
+    """A filesystem-safe stem, so a descriptive record name cannot break paths."""
+    cleaned = _UNSAFE.sub("_", name).strip("._-")
+    return cleaned[:80] or "rona"
 
 
 def _read_sequence(value: str) -> tuple[str, str]:
@@ -169,7 +179,7 @@ def cmd_fold(args) -> int:
     config = _build_config(args)
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    prefix = args.prefix or name
+    prefix = _safe_name(args.prefix or name)
 
     quiet = args.quiet
     started = time.perf_counter()

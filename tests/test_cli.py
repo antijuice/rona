@@ -64,6 +64,27 @@ def test_fold_reads_fasta(tmp_path):
     assert (tmp_path / "demo.json").exists()
 
 
+def test_fasta_description_does_not_leak_into_filenames(tmp_path):
+    """A record name is the first header token; output paths stay safe."""
+    fasta = tmp_path / "s.fa"
+    fasta.write_text(f">my_rna  a long description: with punctuation/slashes\n{SEQ}\n")
+    code = main([
+        "fold", str(fasta), "-n", "2", "-o", str(tmp_path), "--frames", "5",
+        "--post-time", "0.5", "--json", "--workers", "1", "-q",
+    ])
+    assert code == 0
+    assert (tmp_path / "my_rna.json").exists()
+
+
+def test_prefix_is_sanitised(tmp_path):
+    code = main([
+        "fold", SEQ, "-n", "2", "-o", str(tmp_path), "--prefix", "a b/c:d",
+        "--frames", "5", "--post-time", "0.5", "--json", "--workers", "1", "-q",
+    ])
+    assert code == 0
+    assert (tmp_path / "a_b_c_d.json").exists()
+
+
 def test_no_pseudoknots_flag_forbids_crossings(tmp_path):
     main([
         "fold", SEQ, "-n", "6", "-o", str(tmp_path), "--prefix", "np",

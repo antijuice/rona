@@ -103,6 +103,14 @@ def test_base_pair_distance():
     assert base_pair_distance(a, b) == 1
 
 
+def test_fasta_header_uses_the_first_token_as_the_name():
+    records = S.read_fasta(">id123  free text description\nGGGAAACCC\n")
+    assert records == [("id123", "GGGAAACCC")]
+    assert S.read_fasta("GGGAAACCC") == [("seq", "GGGAAACCC")]
+    multi = S.read_fasta(">a\nGGG\nAAA\n>b desc\nCCC\n")
+    assert multi == [("a", "GGGAAA"), ("b", "CCC")]
+
+
 def test_sequence_normalisation():
     assert S.normalise("ggu cat") == "GGUCAU"
     assert S.normalise("acgRy") == "ACGNN"
