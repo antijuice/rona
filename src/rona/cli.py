@@ -314,6 +314,11 @@ def _report(ensemble, args) -> None:
     print(f"  {len(ensemble)} trajectories, "
           f"{sum(ensemble.events) / max(len(ensemble), 1):,.0f} events each on average, "
           f"{ensemble.wall_time:.1f} s wall clock")
+    if ensemble.truncated:
+        print(f"\n  WARNING: {ensemble.truncated} of {len(ensemble)} trajectories hit "
+              f"--max-events and stopped early.  Each holds its last structure for\n"
+              f"  the rest of the run, so late times are frozen rather than simulated."
+              f"  Raise --max-events, or try --mode lumped, which needs far fewer.")
     print()
     print("  final ensemble (top 5):")
     for structure, population in ensemble.final_distribution()[:5]:
@@ -332,6 +337,9 @@ def cmd_trajectory(args) -> int:
     trajectory = simulate_trajectory(sequence, config, seed=args.seed)
     print(f"# {name}  {len(sequence)} nt  seed {args.seed}  "
           f"{trajectory.events} events  {trajectory.wall_time:.2f} s")
+    if trajectory.truncated:
+        print(f"# WARNING: stopped at t = {trajectory.reached:.4g} s after "
+              f"{trajectory.events} events (--max-events); later frames are frozen")
     print(f"# {'time':>9}  {'len':>4}  {'G':>8}  structure")
     previous = None
     for frame in trajectory.frames:

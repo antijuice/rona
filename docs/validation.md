@@ -46,6 +46,32 @@ mode. This is what caught a real defect: helices froze at their nucleation
 length, so melting one had no inverse. Six of eighteen transitions violated
 balance on one system before the fix, zero after.
 
+## 2b. The lumped chain, against the microscopic one — *measured*
+
+`--mode lumped` replaces a helix's window with a function of the set of formed
+stems. That is an approximation, so it is checked three ways, all on exactly
+enumerated state spaces (`tests/test_lumped.py`):
+
+1. **Against the definition.** The incremental engine's placement, read off an
+   owner array, must equal a full canonical placement — and the whole fast
+   engine must reproduce the reference engine in `rona.lumped`, which scores
+   every candidate by full `O(n)` evaluation: the same states, the same edges,
+   the same energies, rates to 1 part in 10⁹.
+2. **Detailed balance**, transition by transition, as in §2 — including the
+   exchange moves, where one helix replaces a competitor.
+3. **Against the microscopic chain**, both master equations solved exactly and
+   compared at every time, not just at equilibrium. Equilibrium total variation
+   is ≤ 0.0013; the time course stays within 0.18 in the sub-millisecond
+   transient (a whole helix appears in one lumped event) and within 0.05 at
+   long times.
+
+Check 3 is the one that earns its keep. It caught two barrier defects that no
+equilibrium test can see, because both had the *right* stationary distribution:
+rates with no nucleation barrier at all, and then a barrier placed at a full
+melt rather than at the saddle of a helix-for-helix trade — which froze the
+designed trap in `examples/01_kinetic_trap.py` at its initial 50/50 split
+forever. The numbers, and the mathematics, are in `docs/lumping.md`.
+
 ## 3. Against experiment — *this is the one that matters*
 
 ### The data

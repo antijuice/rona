@@ -99,3 +99,34 @@ def test_equilibrium_mode_has_the_whole_chain_from_the_start():
     )
     trajectory = simulate_trajectory(SEQ, config, seed=1)
     assert all(f.length == len(SEQ) for f in trajectory.frames)
+
+
+def test_truncation_is_recorded_not_hidden():
+    """A run that runs out of events must say so.
+
+    Every frame after the budget is spent repeats the structure the run froze
+    at, which is not a prediction.  Silence here made a published benchmark
+    number rest on trajectories that had covered a quarter of their schedule.
+    """
+    sequence = "GGCGCAAGCCAUUGGCUUAGCGCCAAAGG"
+    schedule = TranscriptionSchedule(
+        rate=30.0, footprint=4, start_length=10, post_time=5.0
+    )
+    stopped = simulate_trajectory(
+        sequence,
+        SimulationConfig(transcription=schedule, max_events=50, frames=8),
+        seed=3,
+    )
+    assert stopped.truncated
+    assert stopped.reached < stopped.times[-1]
+    # the frames past the stopping point repeat one structure
+    frozen = [f.structure for f in stopped.frames if f.time > stopped.reached]
+    assert len(set(frozen)) <= 1
+
+    whole = simulate_trajectory(
+        sequence,
+        SimulationConfig(transcription=schedule, max_events=10_000_000, frames=8),
+        seed=3,
+    )
+    assert not whole.truncated
+    assert whole.reached >= 0.0

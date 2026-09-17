@@ -46,18 +46,43 @@ exploit timescale separation by lumping. The honest ranking of options for
    `k_zip` values and comparing coarse observables — see
    `examples/05_timescale_separation.py`. It does not disturb detailed balance,
    because the stationary distribution does not depend on a rate prefactor.
-2. *Proper lumping of helix length* (correct, hard). Treat a helix's length as
+2. *Proper lumping of helix length* (correct, hard). Treat a helix's window as
    an internal degree of freedom at local equilibrium and give the coarse state
    its lumped free energy `-RT ln Σ exp(-G_i/RT)`. This removes the fast mode
    entirely rather than slowing it down. The difficulty is that helices compete
    for nucleotides, so their window distributions are *not* independent and the
-   sum does not factorise; a mean-field treatment would be an approximation
-   rather than exact lumping. This is research-scale, not an afternoon.
+   sum does not factorise.
 3. *Full ECS / macrostate lumping across all fast transitions* (the Kinefold
    answer; substantial work).
 
-Option 1 is implemented and its validity is tested rather than assumed. Option 2
-is the recommended next step.
+Option 1 is implemented and its validity is tested rather than assumed.
+
+Option 2 is **implemented** as `--mode lumped`, with the block free energy taken
+at a single canonical window assignment rather than summed — a ground-state
+lumping, whose error is then measured exactly rather than argued about: total
+variation against the microscopic distribution ≤ 0.0013, and the neglected
+window entropy 0.003–0.7 kcal/mol against a worst case of 1.8. The full
+mathematics, including the exact route by belief propagation over the loop tree
+that was *not* taken and why, is in `docs/lumping.md`.
+
+What that write-up makes clear is that the interesting part was not the
+partition function at all. It was the kinetics: lumping the window away also
+lumps away the transition state, so the rates have to be rebuilt around explicit
+barriers — a nucleus for an ordinary nucleation, and a minimum-bottleneck saddle
+for a helix-for-helix trade — or the chain reaches the right equilibrium by the
+wrong route and freezes in kinetic traps. It also shows that option 2 was not
+where the remaining cost lived: with zipping gone, the events are dominated by
+futile *nucleation*, which is untouched by it. The recommended next step is now
+option 4 below.
+
+4. *Integrate the lumped master equation instead of sampling it* (DrTransformer's
+   approach, now feasible). Sampling spends its events on transitions that
+   change nothing; a deterministic propagation over the lumped graph spends none.
+   The obstacle used to be that the microscopic state space is far too large to
+   enumerate — 336 states for a 44 nt trap. The lumped graph for the same system
+   has **9**, small enough to build on the fly and integrate directly, which is
+   exactly the representation DrTransformer needs and did not previously exist
+   here.
 
 ---
 

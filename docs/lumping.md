@@ -98,46 +98,88 @@ occupied and already transcribed. Fixing the order is what makes it a function
 of the set rather than of the history; a stem that cannot reach `min_helix`
 under that placement is not a member of the state.
 
-### Which transitions exist
+### Rates need a barrier, not just a ΔG
 
-`FORM(s)` from `S`, and `MELT(s)` from `S ∪ {s}`, exist only when
+This is the part that is easy to get wrong, and getting it wrong does not show
+up in any equilibrium check.
+
+Lumping the window away also lumps away the **transition state**. A helix does
+not appear whole: it nucleates `min_helix` pairs and then zips. A chain whose
+`FORM` rate is `k min(1, e^(−ΔG_full/RT))` has no nucleation barrier at all, so
+it reaches the right equilibrium by the wrong route — it is a fast equilibrium
+sampler, which is the one thing this tool exists not to be.
+
+So every rate is built from a transition state:
 
 ```
-windows(S ∪ {s}) restricted to S  ==  windows(S)
+k(A→B) = A exp(−(G_top − G_A)/RT),   k(B→A) = A exp(−(G_top − G_B)/RT)
+G_top  = max(G_A, G_B, G_saddle)
 ```
 
-— that is, when toggling `s` leaves every other helix exactly where it is. The
-condition is literally the same expression on both sides, so the two moves are
-exact inverses by construction, and the energy change is confined to one loop,
-which keeps the incremental `ΔG` valid.
+The ratio is `exp(−ΔG/RT)` for **any** `G_saddle` that is a function of the
+unordered pair `{A, B}`, so detailed balance stays exact whatever the barrier
+model; and with no barrier it reduces to Metropolis. What `G_saddle` is:
 
-Nothing is lost by the restriction. A stem's canonical window depends only on
-stems of *lower* index, so any valid set is still reachable by forming its stems
-in increasing index order; and the highest-index member of any set can always
-melt, so every state still has a path back to the open chain. What the rule
-forbids is a single event that both nucleates one helix and retracts another —
-which would need a concerted move, and would break reversibility if allowed.
+| transition | saddle |
+|---|---|
+| nucleate or melt one helix, nothing else moving | the helix's **nucleus** — its most stable `min_helix`-pair run |
+| anything where a helix also *moves* | the lowest saddle over monotone microscopic paths |
+
+The first is what a microscopic nucleation followed by fast zipping commits at,
+`k_nucleate min(1, e^(−ΔG_nuc/RT))`.
+
+### Competing helices, and the trap that exposed them
+
+Two helices that want the same nucleotides cannot both be in a lumped state. If
+the only route between them is "melt one, then form the other", the barrier is
+the full melt, and a kinetic trap never resolves. That is not an abstraction:
+solved exactly, the designed trap in `examples/01_kinetic_trap.py` sat at its
+initial 50/50 split **forever**, against a microscopic ensemble that escapes to
+96% native within a second.
+
+Two things were needed.
+
+**An exchange move.** One helix replacing a competitor in a single transition.
+Candidates come from competitor lists (which stems share a nucleotide) computed
+once from the sequence, and the edge exists only when a predicate on *both*
+states holds — each blocked by the other and by nothing else — so the two
+directions cannot disagree about whether the move is there.
+
+**An honest saddle.** Microscopically the incumbent retracts pair by pair while
+the challenger zips into the nucleotides that frees, and neither is ever far
+from full length at the top. `rona.lumped.slide_barrier` finds that saddle
+exactly, as a **minimum-bottleneck path** (Dijkstra with `max` in place of `+`)
+over the microscopic move set — nucleate `min_helix`, zip or unzip one pair,
+melt at nucleation length — restricted to the pairs the two endpoints disagree
+about, which is what bounds the search. It is memoised on the pair of window
+assignments, and the lumped chain revisits the same transitions constantly, so
+the cost is amortised to about 15%.
+
+A greedy walk is *not* good enough, and this is worth stating because it is the
+obvious thing to write: greedy retracts the incumbent from whichever end is
+cheaper, which is precisely the end that does not unblock the challenger. It
+overestimated this saddle by about 4 kcal/mol — a factor of 10³ in the rate.
 
 ### Two implementations, checked against each other
 
 | | scoring | used for |
 |---|---|---|
-| `KineticEngine(mode="lumped")` | incremental, loop-local `ΔG` | simulation |
-| `rona.lumped.LumpedEngine` | two full `O(n)` evaluations per candidate | reference |
+| `KineticEngine(mode="lumped")` | incremental, loop-local ΔG | simulation |
+| `rona.lumped.LumpedEngine` | full `O(n)` evaluations per candidate | reference |
 
 The reference engine carries none of the invalidation apparatus, so it cannot
-have the class of bug that apparatus produces. `tests/test_lumped.py`
-enumerates both chains exactly and requires the same states, the same edges,
-the same energies, and rates agreeing to 1 part in 10⁹.
+have the class of bug that apparatus produces. `tests/test_lumped.py` enumerates
+both chains exactly and requires the same states, the same edges, the same
+energies, and rates agreeing to 1 part in 10⁹.
 
-### The measured size of the approximation
+### What it costs, measured
 
 Both chains enumerated exactly at full length; the microscopic distribution is
-marginalised onto stem sets. `max ΔG_window` is the largest discrepancy between
-the exact block free energy `−RT ln Z_B` and the canonical-window energy the
-lumped chain uses.
+marginalised onto stem sets. `max ΔG_window` is the largest gap between the
+exact block free energy `−RT ln Z_B` and the canonical-window energy the lumped
+chain uses.
 
-| sequence | states (micro → lumped) | total variation | max ΔG_window |
+| sequence | states (micro → lumped) | equilibrium TV | max ΔG_window |
 |---|---|---|---|
 | `GCGCAAAAGCGCAAAAGCGC` | 10 → 4 | 0.0013 | 0.016 |
 | `GGCAUUGCAAGCAAUGCCAA` | 19 → 4 | 0.0000 | 0.010 |
@@ -146,11 +188,47 @@ lumped chain uses.
 | `GGCGCUUGCGCAAAGCGCAAGCGCC` | 133 → 11 | 0.0000 | 0.024 |
 
 The worst-case bound `RT ln|W|` is around 1.8 kcal/mol per helix. The realised
-error is one to two orders of magnitude below it, and the one state where the
-block free energy is off by 0.7 kcal/mol carries little enough population that
-the distribution still matches to 0.0013. Helix ends are bound too tightly to
-wander: the window sum is dominated by one assignment, which is exactly the
-condition under which ground-state lumping is accurate.
+error is one to two orders of magnitude below it: helix ends are bound too
+tightly to wander, so the window sum is dominated by one assignment, which is
+exactly the condition under which ground-state lumping is accurate.
 
-Cost, and the cotranscriptional benchmark in this mode, are in
-`docs/validation.md`.
+Equilibrium is the easy half. The **time course**, from both master equations
+solved exactly, total variation over stem sets:
+
+| sequence | 10⁻⁴ s | 10⁻² s | 1 s | 10 s |
+|---|---|---|---|---|
+| `GCGCAAAAGCGCAAAAGCGC` | 0.009 | 0.149 | 0.001 | 0.001 |
+| `GGCAUUGCAAGCAAUGCCAA` | 0.163 | 0.000 | 0.000 | 0.000 |
+| `GGGAAACCCAAAGGGAAACCCAAAA` | 0.008 | 0.136 | 0.000 | 0.000 |
+| `GCGGAUUUAGCUCAGUUGGGAGAGC` | 0.182 | 0.001 | 0.001 | 0.001 |
+| `GGCGCUUGCGCAAAGCGCAAGCGCC` | 0.165 | 0.183 | 0.144 | 0.045 |
+| trap (44 nt, `examples/01`) | 0.005 | 0.008 | 0.077 | 0.005 |
+
+The transient lags, and it must: a whole helix appears in one lumped event where
+the microscopic chain zips it pair by pair, so lumped folding runs slightly
+ahead below a millisecond. By the time anything is observable the two agree.
+
+The trap, in populations rather than distances — 9 lumped states against 336
+microscopic:
+
+| trapped fraction | 0.1 s | 1 s | 10 s | 100 s |
+|---|---|---|---|---|
+| microscopic | 0.430 | 0.133 | 0.040 | 0.040 |
+| lumped | 0.458 | 0.210 | 0.045 | 0.045 |
+
+### Speed
+
+On the 127 nt crcB riboswitch, cotranscriptional, one trajectory: lumped mode
+needs **15× fewer events** per second of simulated time (44,000 against
+674,000), and each event costs about 4× more, because a whole-helix move
+invalidates far more candidates than a zip does. Net throughput is about **3×**.
+
+That is a real gain and a smaller one than the event count suggests, and the
+reason is worth being clear about: the events lumping removes are the futile
+*zips*, but what remains is dominated by futile **nucleation** — marginal
+helices flickering on and off at ~10⁵ s⁻¹ and changing nothing. Lumping the
+window does not touch that. The next reduction is not another lumping: it is to
+stop sampling the lumped chain and integrate its master equation directly, which
+is now feasible because the lumped state space is small enough to enumerate
+(9 states where the microscopic chain has 336). That is what DrTransformer does,
+and this is the representation it needs.

@@ -149,11 +149,18 @@ Folding is simulated at the level of **helices**, because that is what produces
 the right separation of timescales.
 
 * `helix` (default) — a move forms the longest currently-unobstructed ladder of
-  a maximal stem, or melts a formed helix whole. Single-base-pair zipping is
-  coarse-grained away. It has to be: adding one pair to an existing helix end
-  takes ~100 ns against ~10 µs for a nucleation event, so resolving it
-  explicitly costs ~10⁸ events per simulated second while leaving the coarse
-  folding pathway unchanged.
+  a maximal stem, melts a formed helix whole, or adds/removes one pair at either
+  end of one. The single-pair moves are not optional: without them a helix stays
+  stranded at whatever length it nucleated to, and melting becomes a one-way
+  door that breaks detailed balance outright.
+* `lumped` — a state is a **set of stems**; where each helix sits is a
+  deterministic function of that set, so the single-pair moves disappear.
+  Rates come from a transition state rather than from ΔG, so nucleation
+  barriers and the saddle of a helix-for-helix trade survive the lumping. About
+  3× the throughput and a state space smaller by a factor of 30, with the time
+  course tracking the microscopic chain to within 0.18 total variation in the
+  transient and 0.05 at long times. `docs/lumping.md` has the mathematics and
+  the measurements.
 * `breathe` — base-pair resolution: helices nucleate at a fixed window and then
   zip or unzip one pair at a time. Physically finer, much more expensive.
 
@@ -287,11 +294,15 @@ Worth being straight about.
   The simulator resolves every elementary event, and zipping a pair onto a helix
   end is a *futile* fast mode — measured on a 58 nt transcript, **99.7% of all
   events are zip/unzip**, with forward and reverse counts equal to three
-  significant figures. Above this size DrTransformer is the better tool for
-  nested structures, and it is not close: it handled a 127 nt input in seconds.
-  Removing the fast mode properly means lumping the helix-length degree of
-  freedom, which does not factorise cleanly because helices compete for
-  nucleotides — see `docs/methods.md`. That is the main open problem.
+  significant figures. `--mode lumped` removes that degree of freedom exactly
+  (`docs/lumping.md`), which cuts the event count 15-fold and the state space
+  30-fold, but only about 3× off the wall clock: what is left is dominated by
+  futile *nucleation* — marginal helices flickering on and off at ~10⁵ s⁻¹ and
+  changing nothing — and lumping the window does not touch that. The next
+  reduction is to integrate the lumped master equation instead of sampling it,
+  which the small lumped state space now makes possible. For nested structures
+  above this size DrTransformer is still the better tool, and it is not close:
+  it handled a 127 nt input in seconds.
 * **`k_zip` is a convergence parameter, not just a rate.** The default (10⁶ s⁻¹)
   is below the physical ~10⁷ s⁻¹ because event count scales linearly with it
   while the coarse result should not. `examples/05_timescale_separation.py`

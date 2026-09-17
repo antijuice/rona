@@ -149,6 +149,12 @@ class Trajectory:
     frames: list[Frame]
     events: int
     wall_time: float = 0.0
+    #: Simulated time actually reached.  Less than the schedule's end when the
+    #: event budget ran out, in which case every later frame repeats the
+    #: structure the run was frozen at - which is not a prediction.
+    reached: float = 0.0
+    #: Whether ``max_events`` stopped the run before its end.
+    truncated: bool = False
 
     @property
     def final(self) -> Frame:
@@ -307,5 +313,7 @@ def simulate_trajectory(
         times=grid_times,
         frames=frames,
         events=events,
+        reached=t,
+        truncated=events >= config.max_events and t < t_end,
         wall_time=_time.perf_counter() - started,
     )

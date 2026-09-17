@@ -59,6 +59,10 @@ class Ensemble:
     lengths: list[int]
     config: SimulationConfig | None = None
     events: list[int] = field(default_factory=list)
+    #: Trajectories the event budget cut short.  A truncated trajectory holds
+    #: its last structure for the rest of the run, so any observable after that
+    #: point is frozen rather than simulated: the count belongs in any report.
+    truncated: int = 0
     wall_time: float = 0.0
 
     # ------------------------------------------------------------------
@@ -224,6 +228,7 @@ class Ensemble:
             lengths=list(self.lengths),
             config=self.config,
             events=list(self.events),
+            truncated=self.truncated,
             wall_time=self.wall_time,
         )
 
@@ -245,6 +250,7 @@ class Ensemble:
             "pseudoknot_fraction": self.pseudoknot_fraction().tolist(),
             "wall_time": self.wall_time,
             "events": list(self.events),
+            "truncated": self.truncated,
         }
 
     def to_json(self, path: str | os.PathLike, *, min_population: float = 0.01) -> None:
@@ -392,5 +398,6 @@ def build_ensemble(
         lengths=lengths,
         config=config,
         events=[traj.events for traj in trajectories],
+        truncated=sum(1 for traj in trajectories if traj.truncated),
         wall_time=wall_time,
     )
