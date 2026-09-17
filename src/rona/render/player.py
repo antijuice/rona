@@ -22,6 +22,7 @@ import numpy as np
 from ..struct import helices_from_pairtable, iter_pairs, parse_dotbracket
 from . import colors
 from .layout import LayoutOptions, bounding_box, camera_path, layout_series
+from .overview import OPEN_CHAIN, kymograph_data_uri, top_bands
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +77,8 @@ def _frame_payload(
             }
         )
 
-    labels, occupancy = ensemble.occupancy(min_population=0.05)
-    if len(labels) > opt.max_bands:
-        order = sorted(np.argsort(-occupancy.max(axis=1))[: opt.max_bands])
-        labels = [labels[k] for k in order]
-        occupancy = occupancy[order]
+    labels, occupancy = ensemble.occupancy(min_population=0.02)
+    labels, occupancy = top_bands(labels, occupancy, ensemble.times, opt.max_bands)
 
     return {
         "sequence": ensemble.seq,
@@ -98,6 +96,8 @@ def _frame_payload(
         "baseColors": colors.BASE_COLORS,
         "elementColors": colors.ELEMENT_COLORS,
         "fps": opt.fps,
+        "kymograph": kymograph_data_uri(ensemble),
+        "openChain": OPEN_CHAIN,
     }
 
 
@@ -135,9 +135,13 @@ h1 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -0.01em; }
 .sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
 main {
   display: grid; grid-template-columns: minmax(0,1.5fr) minmax(0,1fr);
-  gap: 14px; padding: 12px 16px 20px;
+  gap: 14px; padding: 12px 16px 20px; align-items: start;
 }
-@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+.span2 { grid-column: 1 / -1; }
+@media (max-width: 860px) {
+  main { grid-template-columns: 1fr; }
+  .span2 { grid-column: auto; }
+}
 .card {
   background: var(--panel); border: 1px solid var(--line);
   border-radius: 10px; padding: 12px; min-width: 0;
@@ -217,8 +221,12 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
   </section>
   <section>
     <div class="card">
+      <h2>Time overview &middot; colour = helix identity</h2>
+      <canvas id="kymograph" height="190"></canvas>
+    </div>
+    <div class="card" style="margin-top:14px">
       <h2>Structure populations</h2>
-      <canvas id="occupancy" height="200"></canvas>
+      <canvas id="occupancy" height="190"></canvas>
     </div>
     <div class="card" style="margin-top:14px">
       <h2>Ensemble free energy &amp; chain growth</h2>
@@ -230,6 +238,10 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
         <div class="stat"><b id="statN">0</b><span>trajectories</span></div>
       </div>
     </div>
+  </section>
+  <section class="card span2">
+    <h2>Structures in the ensemble now &middot; tile width = population</h2>
+    <canvas id="gallery" height="150"></canvas>
   </section>
 </main>
 <script id="payload" type="application/json">__DATA__</script>
@@ -277,6 +289,51 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
   }
 
   function lerp(a, b, t) { return a + (b - a) * t; }
+
+  const OPEN_CHARS = "([{<ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  const CLOSE_CHARS = ")]}>abcdefghijklmnopqrstuvwxyz";
+
+  // Dot-bracket with the extended alphabet, so pseudoknots parse too.
+  const dbCache = new Map();
+  function parseDb(db) {
+    let cached = dbCache.get(db);
+    if (cached) return cached;
+    const stacks = {}, pairs = [];
+    for (let k = 0; k < db.length; k++) {
+      const oi = OPEN_CHARS.indexOf(db[k]);
+      if (oi >= 0) { (stacks[oi] = stacks[oi] || []).push(k); continue; }
+      const ci = CLOSE_CHARS.indexOf(db[k]);
+      if (ci >= 0) {
+        const st = stacks[ci];
+        if (st && st.length) pairs.push([st.pop(), k]);
+      }
+    }
+    dbCache.set(db, pairs);
+    return pairs;
+  }
+
+  // A base pair's colour is set by its "imaginary centre" (i+j)/2, so every
+  // pair of one helix shares a colour and keeps it for the helix's lifetime.
+  const HUE_CYCLES = 3.5;
+  function pairCentreColor(i, j, n, light) {
+    const h = (((i + j) / 2 / n) * HUE_CYCLES) % 1;
+    const s = 0.62, l = light === undefined ? 0.46 : light;
+    const a = s * Math.min(l, 1 - l);
+    const f = (shift) => {
+      const k = (shift + h * 12) % 12;
+      const v = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+      return Math.round(Math.max(0, Math.min(1, v)) * 255);
+    };
+    return "rgb(" + f(0) + "," + f(8) + "," + f(4) + ")";
+  }
+
+  // occupancy column at a continuous frame position, so tiles glide
+  function occupancyAt(index) {
+    const lo = Math.min(Math.floor(index), F - 1);
+    const hi = Math.min(lo + 1, F - 1);
+    const t = index - lo;
+    return D.occupancy.map((band) => lerp(band[lo], band[hi], t));
+  }
 
   function interpolatedPoints(index) {
     const lo = Math.min(Math.floor(index), F - 1);
@@ -341,7 +398,7 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
       const alpha = mode === "dominant" ? (weight > 0.5 ? 0.95 : 0) : 0.08 + 0.87 * weight;
       if (alpha <= 0.02) continue;
       ctx.globalAlpha = alpha;
-      ctx.strokeStyle = isPk ? pkColor : pairColor;
+      ctx.strokeStyle = isPk ? pkColor : pairCentreColor(i, j, N);
       ctx.lineWidth = Math.max(
         0.6, scale * (isPk ? 0.11 : 0.085) * (0.3 + 0.7 * weight)
       );
@@ -382,6 +439,108 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
     el("dbtext").textContent = frame.db;
   }
 
+  // ---- gallery: one tile per structure, width = its population ------------
+  function drawGallery(index) {
+    const canvas = el("gallery");
+    const { ctx, w, h } = fit(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const column = occupancyAt(index);
+    const pad = 6, labelH = 16;
+    let cursor = 0;
+    const tiles = [];
+    for (let k = 0; k < column.length; k++) {
+      const v = Math.max(0, column[k]);
+      if (v > 0.02) tiles.push({ label: D.structures[k], start: cursor, width: v });
+      cursor += v;
+    }
+    const rest = Math.max(0, 1 - cursor);
+    if (rest > 0.02) tiles.push({ label: null, start: cursor, width: rest });
+
+    for (const tile of tiles) {
+      const x0 = pad + tile.start * (w - 2 * pad);
+      const tw = tile.width * (w - 2 * pad);
+      if (tw < 2) continue;
+      ctx.fillStyle = css("--bg");
+      ctx.strokeStyle = css("--line");
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(x0 + 1, 2, Math.max(1, tw - 2), h - labelH - 4);
+      ctx.fill(); ctx.stroke();
+
+      ctx.fillStyle = css("--muted");
+      ctx.font = "10px Inter, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(Math.round(tile.width * 100) + "%", x0 + tw / 2, h - 4);
+
+      if (!tile.label || tile.label === D.openChain) continue;
+      drawArcs(ctx, tile.label, x0 + 4, x0 + tw - 4, h - labelH - 6, 6);
+    }
+  }
+
+  // A miniature arc diagram: readable at tile size in a way a 2D drawing is not.
+  function drawArcs(ctx, db, x0, x1, yBase, yTop) {
+    const pairs = parseDb(db);
+    const span = x1 - x0;
+    if (span <= 2) return;
+    ctx.strokeStyle = css("--muted");
+    ctx.globalAlpha = 0.6;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x0, yBase);
+    ctx.lineTo(x0 + span * (db.length / N), yBase);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    if (!pairs.length) return;
+    let widest = 1;
+    for (const [i, j] of pairs) widest = Math.max(widest, j - i);
+    for (const [i, j] of pairs) {
+      const cx = x0 + span * ((i + j) / 2 / N);
+      const rx = span * ((j - i) / 2 / N);
+      const ry = (yBase - yTop) * Math.pow((j - i) / widest, 0.55);
+      ctx.strokeStyle = pairCentreColor(i, j, N);
+      ctx.lineWidth = 1.1;
+      ctx.beginPath();
+      ctx.ellipse(cx, yBase, Math.max(rx, 0.5), Math.max(ry, 0.5), 0, Math.PI, 2 * Math.PI);
+      ctx.stroke();
+    }
+  }
+
+  // ---- kymograph ----------------------------------------------------------
+  const kymoImage = new Image();
+  let kymoReady = false;
+  kymoImage.onload = function () { kymoReady = true; render(); };
+  kymoImage.src = D.kymograph;
+
+  function drawKymograph(index) {
+    const canvas = el("kymograph");
+    const { ctx, w, h } = fit(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const padL = 30, padB = 18, padT = 4, padR = 6;
+    const pw = w - padL - padR, ph = h - padT - padB;
+    if (kymoReady) {
+      ctx.imageSmoothingEnabled = false;
+      // flip vertically so nucleotide 1 sits at the bottom, as on an axis
+      ctx.save();
+      ctx.translate(padL, padT + ph);
+      ctx.scale(1, -1);
+      ctx.drawImage(kymoImage, 0, 0, pw, ph);
+      ctx.restore();
+    }
+    ctx.strokeStyle = css("--line"); ctx.lineWidth = 1;
+    ctx.strokeRect(padL, padT, pw, ph);
+    ctx.strokeStyle = css("--text"); ctx.globalAlpha = 0.85; ctx.lineWidth = 1.3;
+    const x = padL + (index / Math.max(F - 1, 1)) * pw;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + ph); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = css("--muted"); ctx.font = "10px Inter, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText(String(N), padL - 4, padT + 8);
+    ctx.fillText("1", padL - 4, padT + ph);
+    ctx.textAlign = "center";
+    ctx.fillText(D.times[0].toFixed(1) + " s", padL, h - 5);
+    ctx.fillText(D.times[F - 1].toFixed(1) + " s", padL + pw, h - 5);
+  }
+
   // ---- occupancy panel ----------------------------------------------------
   function drawOccupancy(index) {
     const canvas = el("occupancy");
@@ -396,7 +555,8 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
     const residual = new Array(F).fill(1);
     for (const band of bands) for (let k = 0; k < F; k++) residual[k] -= band[k];
     for (let k = 0; k < F; k++) residual[k] = Math.max(0, residual[k]);
-    const palette = D.palette.slice();
+    const palette = D.structures.map((name, k) =>
+      name === D.openChain ? css("--line") : D.palette[k % D.palette.length]);
     if (residual.some((v) => v > 1e-6)) { bands.push(residual); palette.push(css("--muted")); }
 
     const base = new Array(F).fill(0);
@@ -474,6 +634,8 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
   function render() {
     const key = Math.min(Math.round(position), F - 1);
     drawStructure(position);
+    drawGallery(position);
+    drawKymograph(position);
     drawOccupancy(position);
     drawEnergy(position);
     el("readout").textContent =

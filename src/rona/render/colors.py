@@ -64,6 +64,43 @@ PROBABILITY_RAMP = (
 )
 
 
+#: Hue cycles across the sequence for pair-centre colouring.
+PAIR_HUE_CYCLES = 3.5
+
+
+def _hsl(hue: float, saturation: float, lightness: float) -> str:
+    """HSL -> ``#rrggbb``."""
+    hue = hue % 1.0
+
+    def channel(shift: float) -> int:
+        k = (shift + hue * 12.0) % 12.0
+        a = saturation * min(lightness, 1.0 - lightness)
+        value = lightness - a * max(-1.0, min(k - 3.0, 9.0 - k, 1.0))
+        return max(0, min(255, round(value * 255)))
+
+    return "#%02x%02x%02x" % (channel(0.0), channel(8.0), channel(4.0))
+
+
+def pair_center_color(i: int, j: int, n: int, *, lightness: float = 0.46) -> str:
+    """Colour a base pair by its "imaginary centre" ``(i + j) / 2``.
+
+    Every pair of one helix shares the same centre - ``(i+k, j-k)`` has centre
+    ``(i+j)/2`` for all ``k`` - so a helix is drawn in a single colour, and it
+    keeps that colour for as long as it exists.  Following a colour through a
+    time course therefore means following one structural motif, which is the
+    whole point when the ensemble is rearranging.
+
+    The hue wraps several times across the sequence so that helices only a few
+    nucleotides apart are still easy to tell apart.
+
+    The scheme is the one introduced by DrForna (Tang et al., 2023).
+    """
+    if n <= 0:
+        return ELEMENT_COLORS["pair"]
+    centre = (i + j) / 2.0 / n
+    return _hsl(centre * PAIR_HUE_CYCLES, 0.62, lightness)
+
+
 def base_color(base: str) -> str:
     return BASE_COLORS.get(base.upper(), BASE_COLORS["N"])
 

@@ -294,12 +294,15 @@ def simulate_ensemble(
     seed: int = 0,
     workers: int | None = None,
     progress: Callable[[int, int], None] | None = None,
+    grid: Sequence[float] | None = None,
 ) -> Ensemble:
     """Run ``n_trajectories`` independent cotranscriptional folding simulations.
 
     Trajectories are independent, so they parallelise perfectly; ``workers``
     defaults to the machine's CPU count.  All trajectories share one time grid
-    so that structures can be compared across the ensemble at each instant.
+    so that structures can be compared across the ensemble at each instant;
+    ``grid`` overrides the default spacing, which is how the probing benchmark
+    asks for exactly one sample per transcript length.
     """
     import time as _time
 
@@ -312,7 +315,9 @@ def simulate_ensemble(
     t_end = (
         schedule.total_time(n) if schedule is not None else config.duration
     )
-    grid = time_grid(t_end, config.frames, config.grid)
+    grid = list(grid) if grid is not None else time_grid(
+        t_end, config.frames, config.grid
+    )
 
     seeds = [seed + k for k in range(n_trajectories)]
     trajectories: list[Trajectory] = []

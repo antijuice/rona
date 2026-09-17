@@ -42,6 +42,7 @@ from .layout import (
     interpolate,
     layout_series,
 )
+from .overview import OPEN_CHAIN, kymograph_array, tile_spans, top_bands
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +62,15 @@ class MovieOptions:
     title: str = ""
     #: Trajectory index to follow in ``trajectory`` mode.
     trajectory: int = 0
+    #: Draw the occupancy-proportional gallery of competing structures.
+    gallery: bool = True
+    #: Draw the time-overview kymograph.
+    kymograph: bool = True
+    #: Colour base pairs by their centre (a helix keeps one colour) rather
+    #: than by nested/pseudoknot status.
+    color_pairs_by_centre: bool = True
+    #: Structures below this population get no tile.
+    gallery_threshold: float = 0.02
 
 
 def _require_matplotlib():
@@ -115,7 +125,10 @@ def render_frames(
     probabilities = (
         ensemble.pair_probabilities() if opt.mode == "ensemble" else None
     )
-    occupancy_labels, occupancy = ensemble.occupancy(min_population=0.05)
+    occupancy_labels, occupancy = ensemble.occupancy(min_population=0.02)
+    occupancy_labels, occupancy = top_bands(
+        occupancy_labels, occupancy, ensemble.times, 11
+    )
     mean_energy = ensemble.mean_energy()
     times = np.asarray(ensemble.times)
     # panels are drawn against sample index and labelled with real times, so a
@@ -130,12 +143,14 @@ def render_frames(
     )
     figure.patch.set_facecolor(colors.ELEMENT_COLORS["background"])
     grid = figure.add_gridspec(
-        2, 2, width_ratios=[1.75, 1.0], height_ratios=[1.0, 1.0],
-        left=0.025, right=0.945, top=0.90, bottom=0.085, wspace=0.20, hspace=0.36,
+        3, 2, width_ratios=[1.75, 1.0], height_ratios=[1.0, 1.0, 0.62],
+        left=0.025, right=0.945, top=0.895, bottom=0.075, wspace=0.20, hspace=0.45,
     )
-    ax_structure = figure.add_subplot(grid[:, 0])
-    ax_occupancy = figure.add_subplot(grid[0, 1])
-    ax_energy = figure.add_subplot(grid[1, 1])
+    ax_structure = figure.add_subplot(grid[0:2, 0])
+    ax_gallery = figure.add_subplot(grid[2, 0])
+    ax_kymograph = figure.add_subplot(grid[0, 1])
+    ax_occupancy = figure.add_subplot(grid[1, 1])
+    ax_energy = figure.add_subplot(grid[2, 1])
 
     base_colors = [colors.base_color(c) for c in sequence]
 
@@ -145,12 +160,20 @@ def render_frames(
     spread = ensemble.energy_spread()
     _draw_occupancy(ax_occupancy, sample_index, occupancy, occupancy_labels, times)
     _draw_energy(ax_energy, sample_index, mean_energy, spread, lengths, times)
-    cursor_occupancy = ax_occupancy.axvline(
+    cursors = []
+    cursors.append(ax_occupancy.axvline(
         0.0, color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
-    )
-    cursor_energy = ax_energy.axvline(
+    ))
+    cursors.append(ax_energy.axvline(
         0.0, color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
-    )
+    ))
+    if opt.kymograph:
+        _draw_kymograph(ax_kymograph, ensemble, sample_index, times)
+        cursors.append(ax_kymograph.axvline(
+            0.0, color=colors.ELEMENT_COLORS["text"], linewidth=1.2, alpha=0.9
+        ))
+    else:
+        ax_kymograph.axis("off")
     figure.suptitle(
         opt.title or f"Cotranscriptional folding kinetics \u2014 {n_total} nt",
         fontsize=14,
@@ -221,11 +244,12 @@ def render_frames(
             if i >= len(frame) or j >= len(frame):
                 continue
             segments.append(np.array([frame[i], frame[j]]))
-            color = (
-                colors.ELEMENT_COLORS["pseudoknot"]
-                if (i, j) in pk
-                else colors.ELEMENT_COLORS["pair"]
-            )
+            if (i, j) in pk:
+                color = colors.ELEMENT_COLORS["pseudoknot"]
+            elif opt.color_pairs_by_centre:
+                color = colors.pair_center_color(i, j, n_total)
+            else:
+                color = colors.ELEMENT_COLORS["pair"]
             # opacity and width both carry the ensemble probability
             stroke.append(_rgba(color, 0.10 + 0.85 * weight))
             widths.append(0.6 + 2.2 * weight)
@@ -270,8 +294,14 @@ def render_frames(
             f"      dominant population {pop:.0%}"
         )
 
-        cursor_occupancy.set_xdata([key, key])
-        cursor_energy.set_xdata([key, key])
+        for cursor in cursors:
+            cursor.set_xdata([key, key])
+        if opt.gallery:
+            _draw_gallery(
+                ax_gallery, occupancy_labels, occupancy[:, key], n_total, opt
+            )
+        else:
+            ax_gallery.axis("off")
 
         figure.canvas.draw()
         buffer = np.asarray(figure.canvas.buffer_rgba())
@@ -285,6 +315,103 @@ def _rgba(color: str, alpha: float) -> tuple[float, float, float, float]:
     g = int(color[3:5], 16) / 255.0
     b = int(color[5:7], 16) / 255.0
     return (r, g, b, min(max(alpha, 0.0), 1.0))
+
+
+def _draw_kymograph(ax, ensemble, index, times) -> None:
+    """Time overview: nucleotide vs time, coloured by which helix it is in."""
+    rgb, alpha = kymograph_array(ensemble)
+    image = np.dstack(
+        [rgb.astype(float) / 255.0, np.clip(alpha, 0.0, 1.0)[:, :, None]]
+    )
+    ax.clear()
+    ax.set_facecolor(colors.ELEMENT_COLORS["background"])
+    ax.imshow(
+        image, aspect="auto", origin="lower", interpolation="nearest",
+        extent=(float(index[0]) - 0.5, float(index[-1]) + 0.5, 0.5, rgb.shape[0] + 0.5),
+    )
+    ax.set_ylabel("nucleotide", fontsize=10)
+    ax.set_title(
+        "time overview \u00b7 colour = helix identity", fontsize=11, loc="left"
+    )
+    ax.tick_params(labelsize=9)
+    _tick_times(ax, index, times)
+    for spine in ("top", "right"):
+        ax.spines[spine].set_visible(False)
+
+
+def _draw_gallery(ax, labels, column, n_total, opt) -> None:
+    """Competing structures as tiles whose width is their population.
+
+    Each tile carries a miniature arc diagram rather than a 2D drawing: at tile
+    size an arc diagram stays readable, and with pairs coloured by centre the
+    differences between competing structures are visible directly.
+    """
+    ax.clear()
+    ax.set_facecolor(colors.ELEMENT_COLORS["background"])
+    ax.set_xlim(0, 1)
+    ax.set_ylim(-0.22, 1.0)
+    ax.axis("off")
+
+    tiles = tile_spans(labels, column, min_width=opt.gallery_threshold)
+    for tile in tiles:
+        pad = min(0.006, tile.width * 0.12)
+        x0, x1 = tile.start + pad, tile.start + tile.width - pad
+        if x1 <= x0:
+            continue
+        ax.add_patch(
+            plt_rectangle(
+                (x0, -0.16), x1 - x0, 1.10,
+                facecolor=colors.ELEMENT_COLORS["panel"],
+                edgecolor=colors.ELEMENT_COLORS["grid"], linewidth=0.7,
+            )
+        )
+        ax.text(
+            (x0 + x1) / 2.0, -0.13, f"{tile.population:.0%}",
+            ha="center", va="bottom", fontsize=8.5,
+            color=colors.ELEMENT_COLORS["muted"],
+        )
+        if tile.index < 0 or tile.label == OPEN_CHAIN:
+            continue
+        _mini_arcs(ax, tile.label, x0, x1, 0.02, 0.92, n_total)
+
+    ax.set_title(
+        "structures in the ensemble now \u00b7 width = population",
+        fontsize=11, loc="left", color=colors.ELEMENT_COLORS["text"],
+    )
+
+
+def plt_rectangle(xy, width, height, **kwargs):
+    from matplotlib.patches import Rectangle
+
+    return Rectangle(xy, width, height, **kwargs)
+
+
+def _mini_arcs(ax, structure, x0, x1, y0, y1, n_total) -> None:
+    """A compact arc diagram of one structure inside a tile."""
+    pt = parse_dotbracket(structure)
+    length = len(pt)
+    if length < 2:
+        return
+    span = x1 - x0
+    ax.plot(
+        [x0, x0 + span * (length / max(n_total, 1))], [y0, y0],
+        color=colors.ELEMENT_COLORS["muted"], linewidth=0.9, alpha=0.7,
+    )
+    pairs = list(iter_pairs(pt))
+    if not pairs:
+        return
+    widest = max(j - i for i, j in pairs) or 1
+    theta = np.linspace(0.0, np.pi, 18)
+    cos_t, sin_t = np.cos(theta), np.sin(theta)
+    for i, j in pairs:
+        centre = x0 + span * ((i + j) / 2.0 / max(n_total, 1))
+        radius = span * ((j - i) / 2.0 / max(n_total, 1))
+        height = (y1 - y0) * ((j - i) / widest) ** 0.55
+        ax.plot(
+            centre - radius * cos_t, y0 + height * sin_t,
+            color=colors.pair_center_color(i, j, n_total),
+            linewidth=1.0, alpha=0.9, solid_capstyle="round",
+        )
 
 
 def _tick_times(ax, index, times) -> None:
@@ -303,7 +430,11 @@ def _draw_occupancy(ax, index, occupancy, labels, times) -> None:
     if len(occupancy):
         bands = list(occupancy)
         residual = np.clip(1.0 - occupancy.sum(axis=0), 0.0, 1.0)
-        palette = [colors.occupancy_color(k) for k in range(len(bands))]
+        palette = [
+            colors.ELEMENT_COLORS["grid"] if labels[k] == OPEN_CHAIN
+            else colors.occupancy_color(k)
+            for k in range(len(bands))
+        ]
         if residual.max() > 1e-9:
             bands.append(residual)
             palette.append(colors.ELEMENT_COLORS["muted"])

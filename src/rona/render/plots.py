@@ -116,7 +116,7 @@ def _axes(
     return parts, sx, sy
 
 
-OPEN_CHAIN = "open chain"
+from .overview import OPEN_CHAIN, top_bands
 
 
 def _band_color(name: str, index: int) -> str:
@@ -126,38 +126,6 @@ def _band_color(name: str, index: int) -> str:
     if name == "other":
         return colors.ELEMENT_COLORS["muted"]
     return colors.occupancy_color(index)
-
-
-def _merge_open_chain(
-    labels: Sequence[str], matrix: np.ndarray
-) -> tuple[list[str], np.ndarray]:
-    """Collapse every pair-free structure into one band.
-
-    During elongation each prefix length gives a *different* pair-free
-    dot-bracket string, so an unfolded chain would otherwise appear as a row of
-    unrelated one-frame bands.  They are all the same state as far as folding
-    is concerned.
-    """
-    open_rows = [k for k, label in enumerate(labels) if "(" not in label]
-    if len(open_rows) < 2:
-        return list(labels), matrix
-    keep = [k for k in range(len(labels)) if k not in set(open_rows)]
-    merged = matrix[open_rows].sum(axis=0)
-    out_labels = [OPEN_CHAIN] + [labels[k] for k in keep]
-    out_matrix = np.vstack([merged[None, :], matrix[keep]])
-    return out_labels, out_matrix
-
-
-def _occupied_time(matrix: np.ndarray, times: np.ndarray) -> np.ndarray:
-    """Time-integrated population of each band (trapezoid rule).
-
-    Written out rather than using ``np.trapezoid``/``np.trapz``, whose name
-    changed between numpy 1.x and 2.x.
-    """
-    if matrix.shape[1] < 2:
-        return matrix.sum(axis=1)
-    widths = np.diff(times)
-    return (0.5 * (matrix[:, :-1] + matrix[:, 1:]) * widths).sum(axis=1)
 
 
 def occupancy_plot(
@@ -172,14 +140,7 @@ def occupancy_plot(
         title=opt_title(ensemble, "Structure populations during transcription")
     )
     labels, matrix = ensemble.occupancy(min_population=min_population)
-    labels, matrix = _merge_open_chain(labels, matrix)
-    if len(labels) > max_bands:
-        # weight = how long a structure is actually occupied, so persistent
-        # states win over transients that briefly hit 100% during elongation
-        weight = _occupied_time(matrix, np.asarray(ensemble.times))
-        order = sorted(np.argsort(-weight)[:max_bands])
-        labels = [labels[k] for k in order]
-        matrix = matrix[order]
+    labels, matrix = top_bands(labels, matrix, ensemble.times, max_bands)
     residual = 1.0 - matrix.sum(axis=0)
     residual = np.clip(residual, 0.0, 1.0)
 
