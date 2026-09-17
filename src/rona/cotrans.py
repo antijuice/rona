@@ -161,12 +161,21 @@ class Trajectory:
         return best.structure
 
 
+#: Decades of dynamic range covered by the logarithmic sampling grid.
+LOG_GRID_DECADES = 3.0
+
+
 def time_grid(t_end: float, frames: int, mode: str = "linear") -> list[float]:
-    """Sampling grid over ``[0, t_end]``."""
+    """Sampling grid over ``[0, t_end]``.
+
+    The logarithmic grid spans :data:`LOG_GRID_DECADES` decades below
+    ``t_end``.  A much lower floor would spend most of the frames on times
+    before the first nucleotide is even added, where nothing has happened.
+    """
     if frames < 2:
         return [0.0, t_end]
     if mode == "log":
-        lo = max(t_end * 1e-6, 1e-9)
+        lo = max(t_end * 10.0 ** (-LOG_GRID_DECADES), 1e-9)
         step = (math.log(t_end) - math.log(lo)) / (frames - 2)
         return [0.0] + [math.exp(math.log(lo) + step * k) for k in range(frames - 1)]
     return [t_end * k / (frames - 1) for k in range(frames)]

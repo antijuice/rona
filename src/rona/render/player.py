@@ -28,7 +28,7 @@ from .layout import LayoutOptions, bounding_box, camera_path, layout_series
 class PlayerOptions:
     title: str = "Cotranscriptional folding ensemble"
     subtitle: str = ""
-    pair_threshold: float = 0.03
+    pair_threshold: float = 0.05
     max_bands: int = 10
     #: Playback speed in sampled frames per second.
     fps: int = 20
@@ -111,16 +111,19 @@ _TEMPLATE = """<!DOCTYPE html>
 :root {
   --bg: #ffffff; --panel: #f5f6f8; --line: #dfe2e7; --text: #1c2028;
   --muted: #6d7580; --accent: #2e86ab; --pk: #d1495b;
+  --pair: #404752; --backbone: #7a828e;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #14171c; --panel: #1c2027; --line: #2c323b; --text: #e8eaed;
     --muted: #9aa2ae; --accent: #5aa9d6; --pk: #f07182;
+    --pair: #c2c9d4; --backbone: #8b939f;
   }
 }
 :root[data-theme="dark"] {
   --bg: #14171c; --panel: #1c2027; --line: #2c323b; --text: #e8eaed;
   --muted: #9aa2ae; --accent: #5aa9d6; --pk: #f07182;
+  --pair: #c2c9d4; --backbone: #8b939f;
 }
 * { box-sizing: border-box; }
 body {
@@ -201,7 +204,7 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
 <main>
   <section class="card">
     <h2>Structure</h2>
-    <canvas id="structure" height="560"></canvas>
+    <canvas id="structure" height="520"></canvas>
     <div class="legend">
       <span><i style="background:#e4572e"></i>A</span>
       <span><i style="background:#2e86ab"></i>C</span>
@@ -256,8 +259,16 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
   // ---- canvas helpers -----------------------------------------------------
   function fit(canvas) {
     const ratio = window.devicePixelRatio || 1;
+    // The CSS height must be remembered separately: setting canvas.height
+    // rewrites the attribute that, absent an explicit CSS height, drives
+    // layout - so reading it back on the next frame would compound the device
+    // pixel ratio and the canvas would grow without bound on a HiDPI display.
+    if (!canvas.dataset.cssHeight) {
+      canvas.dataset.cssHeight = canvas.getAttribute("height");
+    }
+    const height = Number(canvas.dataset.cssHeight);
     const width = canvas.clientWidth || 600;
-    const height = Number(canvas.getAttribute("height"));
+    canvas.style.height = height + "px";
     canvas.width = Math.round(width * ratio);
     canvas.height = Math.round(height * ratio);
     const ctx = canvas.getContext("2d");
@@ -310,8 +321,8 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
       (lettersMode === "auto" && radius >= 5.5);
 
     ctx.lineJoin = "round"; ctx.lineCap = "round";
-    ctx.strokeStyle = css("--muted");
-    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = css("--backbone");
+    ctx.globalAlpha = 0.85;
     ctx.lineWidth = Math.max(1, scale * 0.09);
     ctx.beginPath();
     for (let k = 0; k < visible; k++) {
@@ -322,13 +333,18 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
     ctx.globalAlpha = 1;
 
     const pkColor = css("--pk");
-    const pairColor = css("--muted");
+    const pairColor = css("--pair");
     for (const [i, j, weight, isPk] of frame.pairs) {
-      const alpha = mode === "dominant" ? (weight > 0.5 ? 0.95 : 0) : 0.15 + 0.8 * weight;
+      // opacity AND width carry the ensemble probability, so a pair the
+      // population has committed to reads as solid while a minority pairing
+      // stays a faint hairline instead of clutter
+      const alpha = mode === "dominant" ? (weight > 0.5 ? 0.95 : 0) : 0.08 + 0.87 * weight;
       if (alpha <= 0.02) continue;
       ctx.globalAlpha = alpha;
       ctx.strokeStyle = isPk ? pkColor : pairColor;
-      ctx.lineWidth = Math.max(1, scale * (isPk ? 0.11 : 0.085));
+      ctx.lineWidth = Math.max(
+        0.6, scale * (isPk ? 0.11 : 0.085) * (0.3 + 0.7 * weight)
+      );
       if (isPk) ctx.setLineDash([4, 3]); else ctx.setLineDash([]);
       ctx.beginPath();
       ctx.moveTo(X(pts[i]), Y(pts[i]));

@@ -56,7 +56,7 @@ class MovieOptions:
     height: int = 720
     dpi: int = 100
     #: Base pairs below this ensemble probability are not drawn.
-    pair_threshold: float = 0.04
+    pair_threshold: float = 0.05
     show_letters: bool | None = None
     title: str = ""
     #: Trajectory index to follow in ``trajectory`` mode.
@@ -118,6 +118,9 @@ def render_frames(
     occupancy_labels, occupancy = ensemble.occupancy(min_population=0.05)
     mean_energy = ensemble.mean_energy()
     times = np.asarray(ensemble.times)
+    # panels are drawn against sample index and labelled with real times, so a
+    # log-spaced grid reads correctly
+    sample_index = np.arange(len(times), dtype=float)
     lengths = ensemble.lengths
     dominant = ensemble.dominant()
     camera = camera_path(coords, margin=0.05, min_fraction=0.35)
@@ -140,13 +143,13 @@ def render_frames(
     # moves - so they are drawn once and the cursor is repositioned per frame.
     # Redrawing them every frame dominated the render time.
     spread = ensemble.energy_spread()
-    _draw_occupancy(ax_occupancy, times, occupancy, occupancy_labels)
-    _draw_energy(ax_energy, times, mean_energy, spread, lengths)
+    _draw_occupancy(ax_occupancy, sample_index, occupancy, occupancy_labels, times)
+    _draw_energy(ax_energy, sample_index, mean_energy, spread, lengths, times)
     cursor_occupancy = ax_occupancy.axvline(
-        times[0], color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
+        0.0, color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
     )
     cursor_energy = ax_energy.axvline(
-        times[0], color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
+        0.0, color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
     )
     figure.suptitle(
         opt.title or f"Cotranscriptional folding kinetics \u2014 {n_total} nt",
@@ -223,8 +226,9 @@ def render_frames(
                 if (i, j) in pk
                 else colors.ELEMENT_COLORS["pair"]
             )
-            stroke.append(_rgba(color, 0.18 + 0.72 * weight))
-            widths.append(1.0 + 1.8 * weight)
+            # opacity and width both carry the ensemble probability
+            stroke.append(_rgba(color, 0.10 + 0.85 * weight))
+            widths.append(0.6 + 2.2 * weight)
         if segments:
             ax_structure.add_collection(
                 LineCollection(segments, colors=stroke, linewidths=widths, zorder=2)
@@ -266,8 +270,8 @@ def render_frames(
             f"      dominant population {pop:.0%}"
         )
 
-        cursor_occupancy.set_xdata([time, time])
-        cursor_energy.set_xdata([time, time])
+        cursor_occupancy.set_xdata([key, key])
+        cursor_energy.set_xdata([key, key])
 
         figure.canvas.draw()
         buffer = np.asarray(figure.canvas.buffer_rgba())
@@ -283,7 +287,17 @@ def _rgba(color: str, alpha: float) -> tuple[float, float, float, float]:
     return (r, g, b, min(max(alpha, 0.0), 1.0))
 
 
-def _draw_occupancy(ax, times, occupancy, labels) -> None:
+def _tick_times(ax, index, times) -> None:
+    """Label an index axis with the real sample times."""
+    count = len(times)
+    positions = np.linspace(0, count - 1, min(5, count))
+    ax.set_xticks(positions)
+    ax.set_xticklabels(
+        [f"{times[int(round(p))]:.3g}" for p in positions]
+    )
+
+
+def _draw_occupancy(ax, index, occupancy, labels, times) -> None:
     ax.clear()
     ax.set_facecolor(colors.ELEMENT_COLORS["background"])
     if len(occupancy):
@@ -293,9 +307,10 @@ def _draw_occupancy(ax, times, occupancy, labels) -> None:
         if residual.max() > 1e-9:
             bands.append(residual)
             palette.append(colors.ELEMENT_COLORS["muted"])
-        ax.stackplot(times, *bands, colors=palette, alpha=0.9)
+        ax.stackplot(index, *bands, colors=palette, alpha=0.9)
     ax.set_ylim(0, 1)
-    ax.set_xlim(times[0], times[-1])
+    ax.set_xlim(index[0], index[-1])
+    _tick_times(ax, index, times)
     ax.set_ylabel("population", fontsize=10)
     ax.set_title("structure populations", fontsize=11, loc="left")
     ax.tick_params(labelsize=9)
@@ -303,22 +318,23 @@ def _draw_occupancy(ax, times, occupancy, labels) -> None:
         ax.spines[spine].set_visible(False)
 
 
-def _draw_energy(ax, times, mean, spread, lengths) -> None:
+def _draw_energy(ax, index, mean, spread, lengths, times) -> None:
     ax.clear()
     ax.set_facecolor(colors.ELEMENT_COLORS["background"])
     ax.fill_between(
-        times, mean - spread, mean + spread,
+        index, mean - spread, mean + spread,
         color=colors.OCCUPANCY_PALETTE[0], alpha=0.2, linewidth=0,
     )
-    ax.plot(times, mean, color=colors.OCCUPANCY_PALETTE[0], linewidth=2.0)
-    ax.set_xlim(times[0], times[-1])
+    ax.plot(index, mean, color=colors.OCCUPANCY_PALETTE[0], linewidth=2.0)
+    ax.set_xlim(index[0], index[-1])
+    _tick_times(ax, index, times)
     ax.set_ylabel("<G>  kcal/mol", fontsize=10)
     ax.set_xlabel("time (s)", fontsize=10)
     ax.set_title("ensemble free energy", fontsize=11, loc="left")
     ax.tick_params(labelsize=9)
     twin = ax.twinx()
     twin.plot(
-        times, lengths, color=colors.ELEMENT_COLORS["nascent"],
+        index, lengths, color=colors.ELEMENT_COLORS["nascent"],
         linewidth=1.5, linestyle="--",
     )
     twin.set_ylabel("length (nt)", fontsize=9, color=colors.ELEMENT_COLORS["nascent"])

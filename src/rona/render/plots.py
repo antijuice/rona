@@ -52,6 +52,7 @@ def _axes(
     x_ticks: int = 6,
     y_ticks: int = 5,
     y_format: str = "{:.2f}",
+    x_labels: Sequence[float] | None = None,
 ) -> tuple[list[str], callable, callable]:
     """Emit axis furniture and return the two data->pixel mappings."""
     plot_w = opt.width - opt.left - opt.right
@@ -91,13 +92,16 @@ def _axes(
     for k in range(x_ticks + 1):
         value = x0 + span_x * k / x_ticks
         x = sx(value)
+        shown = value if x_labels is None else x_labels[
+            min(int(round(value)), len(x_labels) - 1)
+        ]
         parts.append(
             f'<line x1="{x:.1f}" y1="{opt.top + plot_h}" x2="{x:.1f}" '
             f'y2="{opt.top + plot_h + 5}" stroke="{muted}" stroke-width="1"/>'
         )
         parts.append(
             f'<text x="{x:.1f}" y="{opt.top + plot_h + 19}" font-size="11" '
-            f'text-anchor="middle" fill="{muted}">{value:.3g}</text>'
+            f'text-anchor="middle" fill="{muted}">{shown:.3g}</text>'
         )
     parts.append(
         f'<text x="{opt.left + plot_w / 2}" y="{opt.height - 8}" font-size="12" '
@@ -112,6 +116,50 @@ def _axes(
     return parts, sx, sy
 
 
+OPEN_CHAIN = "open chain"
+
+
+def _band_color(name: str, index: int) -> str:
+    """Structural bands get the qualitative palette; the two catch-alls do not."""
+    if name == OPEN_CHAIN:
+        return colors.ELEMENT_COLORS["grid"]
+    if name == "other":
+        return colors.ELEMENT_COLORS["muted"]
+    return colors.occupancy_color(index)
+
+
+def _merge_open_chain(
+    labels: Sequence[str], matrix: np.ndarray
+) -> tuple[list[str], np.ndarray]:
+    """Collapse every pair-free structure into one band.
+
+    During elongation each prefix length gives a *different* pair-free
+    dot-bracket string, so an unfolded chain would otherwise appear as a row of
+    unrelated one-frame bands.  They are all the same state as far as folding
+    is concerned.
+    """
+    open_rows = [k for k, label in enumerate(labels) if "(" not in label]
+    if len(open_rows) < 2:
+        return list(labels), matrix
+    keep = [k for k in range(len(labels)) if k not in set(open_rows)]
+    merged = matrix[open_rows].sum(axis=0)
+    out_labels = [OPEN_CHAIN] + [labels[k] for k in keep]
+    out_matrix = np.vstack([merged[None, :], matrix[keep]])
+    return out_labels, out_matrix
+
+
+def _occupied_time(matrix: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Time-integrated population of each band (trapezoid rule).
+
+    Written out rather than using ``np.trapezoid``/``np.trapz``, whose name
+    changed between numpy 1.x and 2.x.
+    """
+    if matrix.shape[1] < 2:
+        return matrix.sum(axis=1)
+    widths = np.diff(times)
+    return (0.5 * (matrix[:, :-1] + matrix[:, 1:]) * widths).sum(axis=1)
+
+
 def occupancy_plot(
     ensemble,
     *,
@@ -124,22 +172,27 @@ def occupancy_plot(
         title=opt_title(ensemble, "Structure populations during transcription")
     )
     labels, matrix = ensemble.occupancy(min_population=min_population)
+    labels, matrix = _merge_open_chain(labels, matrix)
     if len(labels) > max_bands:
-        order = np.argsort(-matrix.max(axis=1))[:max_bands]
-        order = sorted(order)
+        # weight = how long a structure is actually occupied, so persistent
+        # states win over transients that briefly hit 100% during elongation
+        weight = _occupied_time(matrix, np.asarray(ensemble.times))
+        order = sorted(np.argsort(-weight)[:max_bands])
         labels = [labels[k] for k in order]
         matrix = matrix[order]
     residual = 1.0 - matrix.sum(axis=0)
     residual = np.clip(residual, 0.0, 1.0)
 
     times = np.asarray(ensemble.times)
+    xs = np.arange(len(times), dtype=float)
     parts, sx, sy = _axes(
         opt,
-        (float(times[0]), float(times[-1])),
+        (0.0, float(len(times) - 1)),
         (0.0, 1.0),
         x_label="time (s)",
         y_label="population",
         y_format="{:.1f}",
+        x_labels=times,
     )
 
     bands = list(matrix) + ([residual] if residual.max() > 1e-9 else [])
@@ -147,14 +200,10 @@ def occupancy_plot(
     baseline = np.zeros(len(times))
     for index, band in enumerate(bands):
         top = baseline + band
-        color = (
-            colors.ELEMENT_COLORS["muted"]
-            if names[index] == "other"
-            else colors.occupancy_color(index)
-        )
-        upper = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(times, top))
+        color = _band_color(names[index], index)
+        upper = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(xs, top))
         lower = " ".join(
-            f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(times[::-1], baseline[::-1])
+            f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(xs[::-1], baseline[::-1])
         )
         parts.append(
             f'<polygon points="{upper} {lower}" fill="{color}" opacity="0.85"/>'
@@ -171,16 +220,12 @@ def occupancy_plot(
         y = opt.top + 18 + index * 16
         if y > opt.height - opt.bottom:
             break
-        color = (
-            colors.ELEMENT_COLORS["muted"]
-            if name == "other"
-            else colors.occupancy_color(index)
-        )
+        color = _band_color(name, index)
         parts.append(
             f'<rect x="{legend_x}" y="{y - 8}" width="10" height="10" fill="{color}"/>'
         )
-        if name == "other":
-            label = "other"
+        if name in ("other", OPEN_CHAIN):
+            label = name
         else:
             # the peak population is what makes a band worth looking at
             peak = float(bands[index].max())
@@ -201,6 +246,7 @@ def energy_plot(ensemble, *, options: PlotOptions | None = None) -> str:
     """Mean free energy with ensemble spread, plus transcript length."""
     opt = options or PlotOptions(title="Ensemble free energy and chain growth")
     times = np.asarray(ensemble.times)
+    xs = np.arange(len(times), dtype=float)
     mean = ensemble.mean_energy()
     spread = ensemble.energy_spread()
     lengths = np.asarray(ensemble.lengths, dtype=float)
@@ -210,23 +256,24 @@ def energy_plot(ensemble, *, options: PlotOptions | None = None) -> str:
     pad = max(1.0, 0.08 * (high - low))
     parts, sx, sy = _axes(
         opt,
-        (float(times[0]), float(times[-1])),
+        (0.0, float(len(times) - 1)),
         (low - pad, high + pad),
         x_label="time (s)",
         y_label="free energy (kcal/mol)",
         y_format="{:.0f}",
+        x_labels=times,
     )
 
-    upper = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(times, mean + spread))
+    upper = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(xs, mean + spread))
     lower = " ".join(
         f"{sx(t):.1f},{sy(v):.1f}"
-        for t, v in zip(times[::-1], (mean - spread)[::-1])
+        for t, v in zip(xs[::-1], (mean - spread)[::-1])
     )
     parts.append(
         f'<polygon points="{upper} {lower}" fill="{colors.OCCUPANCY_PALETTE[0]}" '
         f'opacity="0.22"/>'
     )
-    line = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(times, mean))
+    line = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(xs, mean))
     parts.append(
         f'<polyline points="{line}" fill="none" '
         f'stroke="{colors.OCCUPANCY_PALETTE[0]}" stroke-width="2.2"/>'
@@ -237,7 +284,7 @@ def energy_plot(ensemble, *, options: PlotOptions | None = None) -> str:
     max_len = float(lengths.max()) or 1.0
     growth = " ".join(
         f"{sx(t):.1f},{opt.top + plot_h - (v / max_len) * plot_h:.1f}"
-        for t, v in zip(times, lengths)
+        for t, v in zip(xs, lengths)
     )
     parts.append(
         f'<polyline points="{growth}" fill="none" '
@@ -327,16 +374,18 @@ def pseudoknot_plot(ensemble, *, options: PlotOptions | None = None) -> str:
     """Fraction of the ensemble carrying a pseudoknot, over time."""
     opt = options or PlotOptions(height=240, title="Pseudoknotted fraction")
     times = np.asarray(ensemble.times)
+    xs = np.arange(len(times), dtype=float)
     fraction = ensemble.pseudoknot_fraction()
     parts, sx, sy = _axes(
         opt,
-        (float(times[0]), float(times[-1])),
+        (0.0, float(len(times) - 1)),
         (0.0, max(0.05, float(fraction.max()) * 1.15)),
         x_label="time (s)",
         y_label="fraction",
         y_format="{:.2f}",
+        x_labels=times,
     )
-    line = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(times, fraction))
+    line = " ".join(f"{sx(t):.1f},{sy(v):.1f}" for t, v in zip(xs, fraction))
     parts.append(
         f'<polyline points="{line}" fill="none" '
         f'stroke="{colors.ELEMENT_COLORS["pseudoknot"]}" stroke-width="2.2"/>'

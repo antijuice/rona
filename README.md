@@ -44,6 +44,10 @@ until the kinetics melts it.
 | pause sites matter | no | no | **yes** |
 | pseudoknots | model-dependent | model-dependent | **yes** |
 
+<p align="center">
+  <img src="docs/images/player.png" alt="The interactive player: a morphing structure beside synchronised population and energy panels" width="900">
+</p>
+
 ---
 
 ## Install
@@ -86,6 +90,36 @@ structure, population = ensemble.dominant()[-1]
 probabilities = ensemble.pair_probabilities()   # P[t, i, j]
 labels, bands = ensemble.occupancy()            # the folding pathway
 ```
+
+---
+
+## A worked result
+
+A designed folding trap, 44 nt. Segment A pairs with the nearby A′ the moment
+A′ is transcribed — a local, fast, 8 bp hairpin. The global minimum instead
+pairs A′ with the later A″, an 11 bp helix worth 2.2 kcal/mol more.
+
+| | structure | ΔG (kcal/mol) |
+|---|---|---|
+| ViennaRNA MFE | `............(((((((((((.((....)).)))))))))))` | −16.8 |
+| **Cotranscriptional, 30 nt/s** | **`((((((((....))))))))........................` — 100% of the ensemble** | **−14.6** |
+| Refolded from the open chain | reaches the MFE in 56% of trajectories | — |
+
+Same sequence, same energy model, different answer — because the order in which
+the chain appears decides which helix wins. `python examples/01_kinetic_trap.py`
+reproduces it, and checks the equilibrium side against ViennaRNA.
+
+<p align="center">
+  <img src="docs/images/occupancy.svg" alt="Stacked structure populations over log time during and after transcription" width="880">
+</p>
+
+Structure populations through a run, on a log time axis. Each band is a distinct
+structure; the plot reads left-to-right as the folding pathway.
+
+<p align="center">
+  <img src="docs/images/pseudoknot.svg" alt="An H-type pseudoknot drawn with the crossing helix as a rigid ladder" width="430">
+  <img src="docs/images/trna.svg" alt="A tRNA cloverleaf drawn by the loop-circle layout" width="430">
+</p>
 
 ---
 
