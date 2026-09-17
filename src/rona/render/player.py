@@ -21,7 +21,7 @@ import numpy as np
 
 from ..struct import helices_from_pairtable, iter_pairs, parse_dotbracket
 from . import colors
-from .layout import LayoutOptions, bounding_box, layout_series
+from .layout import LayoutOptions, bounding_box, camera_path, layout_series
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,8 @@ def _frame_payload(
     coords = layout_series(structures, options=layout_options)
     n_total = len(ensemble.seq)
     box = bounding_box(coords)
+    # per-frame view boxes, so the player pans and zooms like the movie
+    camera = camera_path(coords, margin=0.05, min_fraction=0.35)
     probabilities = ensemble.pair_probabilities()
 
     frames = []
@@ -70,6 +72,7 @@ def _frame_payload(
                 "pairs": pairs,
                 "db": structure,
                 "len": visible,
+                "view": [round(float(v), 3) for v in camera[index]],
             }
         )
 
@@ -286,8 +289,13 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
     const key = Math.min(Math.round(index), F - 1);
     const frame = D.frames[key];
     const pts = interpolatedPoints(index);
-    const box = D.box;
-    const pad = 26;
+    // interpolate the camera between key frames too, so it glides
+    const loK = Math.min(Math.floor(index), F - 1);
+    const hiK = Math.min(loK + 1, F - 1);
+    const tK = index - loK;
+    const va = D.frames[loK].view, vb = D.frames[hiK].view;
+    const box = [0, 1, 2, 3].map((k) => lerp(va[k], vb[k], tK));
+    const pad = 22;
     const spanX = Math.max(box[2] - box[0], 1e-6);
     const spanY = Math.max(box[3] - box[1], 1e-6);
     const scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanY);

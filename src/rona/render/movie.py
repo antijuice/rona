@@ -34,7 +34,14 @@ import numpy as np
 
 from ..struct import helices_from_pairtable, iter_pairs, parse_dotbracket
 from . import colors
-from .layout import LayoutOptions, bounding_box, interpolate, layout_series
+from .layout import (
+    LayoutOptions,
+    bounding_box,
+    camera_path,
+    fit_aspect,
+    interpolate,
+    layout_series,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,22 +120,59 @@ def render_frames(
     times = np.asarray(ensemble.times)
     lengths = ensemble.lengths
     dominant = ensemble.dominant()
-    box = bounding_box(coords)
-    pad = 0.06 * max(box[2] - box[0], box[3] - box[1], 1.0)
+    camera = camera_path(coords, margin=0.05, min_fraction=0.35)
 
     figure = plt.figure(
         figsize=(opt.width / opt.dpi, opt.height / opt.dpi), dpi=opt.dpi
     )
     figure.patch.set_facecolor(colors.ELEMENT_COLORS["background"])
     grid = figure.add_gridspec(
-        2, 2, width_ratios=[1.55, 1.0], height_ratios=[1.0, 1.0],
-        left=0.035, right=0.975, top=0.90, bottom=0.085, wspace=0.16, hspace=0.32,
+        2, 2, width_ratios=[1.75, 1.0], height_ratios=[1.0, 1.0],
+        left=0.025, right=0.945, top=0.90, bottom=0.085, wspace=0.20, hspace=0.36,
     )
     ax_structure = figure.add_subplot(grid[:, 0])
     ax_occupancy = figure.add_subplot(grid[0, 1])
     ax_energy = figure.add_subplot(grid[1, 1])
 
     base_colors = [colors.base_color(c) for c in sequence]
+
+    # The population and energy panels never change - only the time cursor
+    # moves - so they are drawn once and the cursor is repositioned per frame.
+    # Redrawing them every frame dominated the render time.
+    spread = ensemble.energy_spread()
+    _draw_occupancy(ax_occupancy, times, occupancy, occupancy_labels)
+    _draw_energy(ax_energy, times, mean_energy, spread, lengths)
+    cursor_occupancy = ax_occupancy.axvline(
+        times[0], color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
+    )
+    cursor_energy = ax_energy.axvline(
+        times[0], color=colors.ELEMENT_COLORS["text"], linewidth=1.3, alpha=0.8
+    )
+    figure.suptitle(
+        opt.title or f"Cotranscriptional folding kinetics \u2014 {n_total} nt",
+        fontsize=14,
+        weight="bold",
+        color=colors.ELEMENT_COLORS["text"],
+        x=0.025,
+        ha="left",
+    )
+    # the per-frame caption belongs to the figure: an axes title would move
+    # with the structure panel's box
+    caption = figure.text(
+        0.025, 0.925, "", fontsize=12,
+        color=colors.ELEMENT_COLORS["text"],
+        family="monospace", va="bottom",
+    )
+
+    # Expand the view box to the panel's own aspect ratio, so an equal-aspect
+    # drawing fills the panel instead of being shrunk to fit inside it.  One
+    # draw is needed first to learn the panel's final size.
+    figure.canvas.draw()
+    position = ax_structure.get_position()
+    panel_aspect = (position.width * opt.width) / max(
+        position.height * opt.height, 1e-6
+    )
+    views = [fit_aspect(row, panel_aspect) for row in camera]
 
     for frame_index, frame in enumerate(coords):
         key = min(frame_index // steps, len(structures) - 1)
@@ -138,8 +182,9 @@ def render_frames(
 
         ax_structure.clear()
         ax_structure.set_facecolor(colors.ELEMENT_COLORS["background"])
-        ax_structure.set_xlim(box[0] - pad, box[2] + pad)
-        ax_structure.set_ylim(box[1] - pad, box[3] + pad)
+        view = views[frame_index]
+        ax_structure.set_xlim(view[0], view[2])
+        ax_structure.set_ylim(view[1], view[3])
         ax_structure.set_aspect("equal")
         ax_structure.axis("off")
 
@@ -216,25 +261,14 @@ def render_frames(
 
         pop = dominant[key][1]
         label = "RNAP" if length < n_total else "3′ released"
-        ax_structure.set_title(
-            f"t = {time:7.2f} s     {length} nt     {label}"
-            f"     dominant population {pop:.0%}",
-            fontsize=12,
-            color=colors.ELEMENT_COLORS["text"],
-            loc="left",
+        caption.set_text(
+            f"t = {time:7.2f} s      {length} nt      {label}"
+            f"      dominant population {pop:.0%}"
         )
 
-        _draw_occupancy(ax_occupancy, times, occupancy, occupancy_labels, time)
-        _draw_energy(ax_energy, times, mean_energy, ensemble.energy_spread(), lengths, time)
+        cursor_occupancy.set_xdata([time, time])
+        cursor_energy.set_xdata([time, time])
 
-        figure.suptitle(
-            opt.title or f"Cotranscriptional folding kinetics — {n_total} nt",
-            fontsize=14,
-            weight="600",
-            color=colors.ELEMENT_COLORS["text"],
-            x=0.035,
-            ha="left",
-        )
         figure.canvas.draw()
         buffer = np.asarray(figure.canvas.buffer_rgba())
         yield buffer[:, :, :3].copy()
@@ -249,7 +283,7 @@ def _rgba(color: str, alpha: float) -> tuple[float, float, float, float]:
     return (r, g, b, min(max(alpha, 0.0), 1.0))
 
 
-def _draw_occupancy(ax, times, occupancy, labels, cursor: float) -> None:
+def _draw_occupancy(ax, times, occupancy, labels) -> None:
     ax.clear()
     ax.set_facecolor(colors.ELEMENT_COLORS["background"])
     if len(occupancy):
@@ -260,7 +294,6 @@ def _draw_occupancy(ax, times, occupancy, labels, cursor: float) -> None:
             bands.append(residual)
             palette.append(colors.ELEMENT_COLORS["muted"])
         ax.stackplot(times, *bands, colors=palette, alpha=0.9)
-    ax.axvline(cursor, color=colors.ELEMENT_COLORS["text"], linewidth=1.2, alpha=0.75)
     ax.set_ylim(0, 1)
     ax.set_xlim(times[0], times[-1])
     ax.set_ylabel("population", fontsize=10)
@@ -270,7 +303,7 @@ def _draw_occupancy(ax, times, occupancy, labels, cursor: float) -> None:
         ax.spines[spine].set_visible(False)
 
 
-def _draw_energy(ax, times, mean, spread, lengths, cursor: float) -> None:
+def _draw_energy(ax, times, mean, spread, lengths) -> None:
     ax.clear()
     ax.set_facecolor(colors.ELEMENT_COLORS["background"])
     ax.fill_between(
@@ -278,7 +311,6 @@ def _draw_energy(ax, times, mean, spread, lengths, cursor: float) -> None:
         color=colors.OCCUPANCY_PALETTE[0], alpha=0.2, linewidth=0,
     )
     ax.plot(times, mean, color=colors.OCCUPANCY_PALETTE[0], linewidth=2.0)
-    ax.axvline(cursor, color=colors.ELEMENT_COLORS["text"], linewidth=1.2, alpha=0.75)
     ax.set_xlim(times[0], times[-1])
     ax.set_ylabel("<G>  kcal/mol", fontsize=10)
     ax.set_xlabel("time (s)", fontsize=10)

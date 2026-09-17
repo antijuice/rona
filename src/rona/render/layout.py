@@ -157,7 +157,9 @@ def _nested_layout(
 
         angle = math.atan2(start[1] - centre[1], start[0] - centre[0])
         # traverse so that the loop opens away from the parent helix
-        cross = np.cross(start - centre, end - centre)
+        # 2D scalar cross product; np.cross on 2-vectors is deprecated
+        u, v = start - centre, end - centre
+        cross = float(u[0] * v[1] - u[1] * v[0])
         sign = -1.0 if cross > 0 else 1.0
         for k in range(len(loop) - 1):
             step = 2.0 * math.asin(min(1.0, chords[k] / (2.0 * radius)))
@@ -443,6 +445,92 @@ def interpolate(
             out.append((1.0 - eased) * a + eased * b)
     out.append(padded(frames[-1]))
     return out
+
+
+def camera_path(
+    frames: Sequence[np.ndarray],
+    *,
+    smoothing: float = 0.18,
+    margin: float = 0.08,
+    min_fraction: float = 0.45,
+) -> np.ndarray:
+    """A smoothly moving view box that follows the molecule, one row per frame.
+
+    A single fixed box over the whole time course is dominated by the early,
+    fully-extended chain, which leaves the folded structure small for the rest
+    of the film.  Framing each frame independently instead makes the view jump.
+
+    This smooths the per-frame boxes with a centred moving average, then takes
+    the element-wise maximum against the raw box so the molecule can never be
+    clipped, and finally applies a floor on the span so a ten-nucleotide chain
+    is not magnified out of proportion.  The result reads as a camera gently
+    zooming and panning.
+
+    Returns an ``(n_frames, 4)`` array of ``(x0, y0, x1, y1)``.
+    """
+    if not frames:
+        return np.zeros((0, 4))
+    raw = np.array([bounding_box([f]) for f in frames], dtype=float)
+    centre = np.stack(
+        [(raw[:, 0] + raw[:, 2]) / 2.0, (raw[:, 1] + raw[:, 3]) / 2.0], axis=1
+    )
+    half = np.stack(
+        [(raw[:, 2] - raw[:, 0]) / 2.0, (raw[:, 3] - raw[:, 1]) / 2.0], axis=1
+    )
+
+    count = len(frames)
+    window = max(3, int(count * smoothing) | 1)
+    kernel = np.ones(window) / window
+    pad = window // 2
+
+    def smooth(values: np.ndarray) -> np.ndarray:
+        padded = np.concatenate(
+            [np.full(pad, values[0]), values, np.full(pad, values[-1])]
+        )
+        return np.convolve(padded, kernel, mode="valid")[:count]
+
+    centre = np.stack([smooth(centre[:, 0]), smooth(centre[:, 1])], axis=1)
+    half = np.stack([smooth(half[:, 0]), smooth(half[:, 1])], axis=1)
+    # The smoothed centre can sit off the frame's own centre, so the half-span
+    # is measured *from the smoothed centre* to the furthest edge of the raw
+    # box.  That keeps the pan smooth while guaranteeing nothing is ever
+    # clipped - which a movie makes immediately obvious.
+    need = np.stack(
+        [
+            np.maximum(centre[:, 0] - raw[:, 0], raw[:, 2] - centre[:, 0]),
+            np.maximum(centre[:, 1] - raw[:, 1], raw[:, 3] - centre[:, 1]),
+        ],
+        axis=1,
+    )
+    half = np.maximum(half, need)
+    floor = min_fraction * half.max(axis=0)
+    half = np.maximum(half, floor) * (1.0 + margin)
+    half = np.maximum(half, 1e-6)
+
+    out = np.empty((count, 4))
+    out[:, 0] = centre[:, 0] - half[:, 0]
+    out[:, 1] = centre[:, 1] - half[:, 1]
+    out[:, 2] = centre[:, 0] + half[:, 0]
+    out[:, 3] = centre[:, 1] + half[:, 1]
+    return out
+
+
+def fit_aspect(
+    box: Sequence[float], aspect: float
+) -> tuple[float, float, float, float]:
+    """Grow a view box to a target width/height ratio, keeping it centred."""
+    x0, y0, x1, y1 = (float(v) for v in box)
+    width = max(x1 - x0, 1e-6)
+    height = max(y1 - y0, 1e-6)
+    if width / height < aspect:
+        target = height * aspect
+        centre = 0.5 * (x0 + x1)
+        x0, x1 = centre - target / 2.0, centre + target / 2.0
+    else:
+        target = width / aspect
+        centre = 0.5 * (y0 + y1)
+        y0, y1 = centre - target / 2.0, centre + target / 2.0
+    return (x0, y0, x1, y1)
 
 
 def bounding_box(frames: Iterable[np.ndarray]) -> tuple[float, float, float, float]:

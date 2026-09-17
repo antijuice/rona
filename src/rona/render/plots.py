@@ -35,7 +35,7 @@ class PlotOptions:
     width: int = 900
     height: int = 340
     left: float = 62.0
-    right: float = 168.0
+    right: float = 186.0
     top: float = 40.0
     bottom: float = 46.0
     title: str = ""
@@ -179,10 +179,16 @@ def occupancy_plot(
         parts.append(
             f'<rect x="{legend_x}" y="{y - 8}" width="10" height="10" fill="{color}"/>'
         )
-        short = name if name == "other" else f"S{index + 1}"
+        if name == "other":
+            label = "other"
+        else:
+            # the peak population is what makes a band worth looking at
+            peak = float(bands[index].max())
+            pairs = name.count("(") + name.count("[") + name.count("{")
+            label = f"S{index + 1}  {peak:.0%}  {pairs}bp"
         parts.append(
             f'<text x="{legend_x + 15}" y="{y + 1}" font-size="11" '
-            f'fill="{colors.ELEMENT_COLORS["muted"]}">{_esc(short)}</text>'
+            f'fill="{colors.ELEMENT_COLORS["muted"]}">{_esc(label)}</text>'
         )
     return _wrap(parts, opt)
 
