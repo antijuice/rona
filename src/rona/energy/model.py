@@ -314,7 +314,22 @@ class NearestNeighbourModel:
     ) -> float:
         """Free energy (dekacal/mol) of the single loop closed by ``closing``."""
         length = len(pt) if n is None else n
-        branches, unpaired = self.loop_branches(pt, closing, length)
+        # inlined loop walk: this is the hottest path in the simulator
+        if closing is None:
+            lo, hi = 0, length
+        else:
+            lo, hi = closing[0] + 1, closing[1]
+        branches: list[tuple[int, int]] = []
+        unpaired = 0
+        k = lo
+        while k < hi:
+            partner = pt[k]
+            if partner < 0 or not (lo <= partner < hi) or partner < k:
+                unpaired += 1
+                k += 1
+            else:
+                branches.append((k, partner))
+                k = partner + 1
 
         if closing is None:
             e = 0.0
@@ -376,12 +391,17 @@ class NearestNeighbourModel:
         self, enc: Sequence[int], seq: str, pt: Sequence[int], n: int | None = None
     ) -> float:
         """Total free energy (kcal/mol) of a **nested** structure."""
-        total = 0.0
-        for closing in self.closing_pairs(pt, n):
-            e = self.loop_energy(enc, seq, pt, closing, n)
-            if e >= FORBIDDEN * 100:
-                return float("inf")
-            total += e
+        length = len(pt) if n is None else n
+        total = self.loop_energy(enc, seq, pt, None, length)
+        if total >= FORBIDDEN * 100:
+            return float("inf")
+        for i in range(length):
+            j = pt[i]
+            if j > i:
+                e = self.loop_energy(enc, seq, pt, (i, j), length)
+                if e >= FORBIDDEN * 100:
+                    return float("inf")
+                total += e
         return total / 100.0
 
     def decompose(

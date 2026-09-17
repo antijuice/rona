@@ -94,11 +94,22 @@ def conflict_graph(helices: Sequence[Helix]) -> list[set[int]]:
     """Adjacency sets of the "these two helices cross" graph."""
     adj: list[set[int]] = [set() for _ in helices]
     for a in range(len(helices)):
+        helix_a = helices[a]
         for b in range(a + 1, len(helices)):
-            if helices[a].crosses(helices[b]):
+            if helix_a.crosses(helices[b]):
                 adj[a].add(b)
                 adj[b].add(a)
     return adj
+
+
+def any_crossing(helices: Sequence[Helix]) -> bool:
+    """Cheap test for "is this structure pseudoknotted at all"."""
+    for a in range(len(helices)):
+        helix_a = helices[a]
+        for b in range(a + 1, len(helices)):
+            if helix_a.crosses(helices[b]):
+                return True
+    return False
 
 
 def split_crossing(

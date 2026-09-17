@@ -203,16 +203,36 @@ class Helix:
         nucleotides.  The two helices cross exactly when one arm of ``other``
         falls between this helix's arms and the other does not.
         """
-        if self.occupies() & other.occupies():
+        if self.overlaps(other):
             return any(_crosses(p, q) for p in self.pairs for q in other.pairs)
         inner_a, inner_b = self.inner
         left_mid = inner_a < other.i < inner_b
         right_mid = inner_a < other.j < inner_b
         return left_mid != right_mid
 
+    def arms(self) -> tuple[int, int, int, int]:
+        """The two contiguous nucleotide runs, as ``(5'lo, 5'hi, 3'lo, 3'hi)``."""
+        return (
+            self.i,
+            self.i + self.length - 1,
+            self.j - self.length + 1,
+            self.j,
+        )
+
+    def overlaps(self, other: "Helix") -> bool:
+        """True if the two helices share any nucleotide (O(1))."""
+        a1, a2, a3, a4 = self.arms()
+        b1, b2, b3, b4 = other.arms()
+        return (
+            (a1 <= b2 and b1 <= a2)
+            or (a1 <= b4 and b3 <= a2)
+            or (a3 <= b2 and b1 <= a4)
+            or (a3 <= b4 and b3 <= a4)
+        )
+
     def conflicts(self, other: "Helix") -> bool:
         """True if the two helices would need to share a nucleotide."""
-        return bool(self.occupies() & other.occupies())
+        return self.overlaps(other)
 
     def shrunk(self, *, outer: int = 0, inner: int = 0) -> "Helix":
         """Return this helix with base pairs peeled from either end."""

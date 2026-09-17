@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 from typing import Iterator, Sequence
 
 from .energy.evaluator import FoldingEnergy, enclosing_pair
-from .energy.pseudoknot import PseudoknotModel, pseudoknot_region, split_crossing
+from .energy.pseudoknot import PseudoknotModel, pseudoknot_region
 from .moves import FORM, MELT, UNZIP_IN, UNZIP_OUT, ZIP_IN, ZIP_OUT, MoveSet
 from .struct import Helix, to_dotbracket
 
@@ -301,6 +301,13 @@ class KineticEngine:
         self._dyn_total = 0.0
         self._dyn_dirty = True
         self._crossing: set[int] = set()
+        # Pair table of the nested core only.  While the structure has no
+        # crossings this *is* the full pair table, so the fast path costs
+        # nothing; once a pseudoknot forms the two diverge and the core keeps
+        # its loop decomposition (and therefore its O(loop) deltas).
+        self._core_pt: list[int] = self.state.pt
+        self._pk_regions: tuple[tuple[int, int], ...] = ()
+        self._pk_keys: set[tuple[int, int, int]] = set()
 
     # ------------------------------------------------------------------
     # activation and invalidation
@@ -321,6 +328,7 @@ class KineticEngine:
         # the exterior loop just gained a nucleotide: every helix end sitting in
         # it has a new dangling-end context
         self._touch(loop_positions(st.pt, None, st.available))
+        self._rebuild_core()
         self._dyn_dirty = True
 
     def _touch(self, positions) -> None:
@@ -330,17 +338,41 @@ class KineticEngine:
             if pos < self.n:
                 dirty.update(by_pos[pos])
 
-    def _touch_pseudoknot_regions(self) -> None:
-        """Pseudoknot penalties depend on unpaired counts across a whole region."""
+    def _rebuild_core(self) -> None:
+        """Refresh the nested-core pair table and the pseudoknot regions.
+
+        Also invalidates every candidate inside a pseudoknot region, because
+        the topology penalty depends on unpaired counts across the whole
+        region rather than on any single loop.
+        """
+        st = self.state
         if not self._crossing:
+            self._core_pt = st.pt
+            self._pk_regions = ()
+            self._pk_keys = set()
             return
-        helices = self.state.helices()
-        core, pk = split_crossing(
-            helices, stability=[self.energy.helix_stability(h) for h in helices]
-        )
-        for h in pk:
-            lo, hi = pseudoknot_region(h, [c for c in core if h.crosses(c)])
+        helices = st.helices()
+        core, pk = self.energy.split(helices)
+        core_pt = [-1] * self.n
+        for helix in core:
+            for a, b in helix.pairs:
+                core_pt[a], core_pt[b] = b, a
+        self._core_pt = core_pt
+        regions = []
+        for helix in pk:
+            lo, hi = pseudoknot_region(
+                helix, [c for c in core if helix.crosses(c)]
+            )
+            regions.append((lo, hi))
             self._touch(range(lo, min(hi + 1, self.n)))
+        self._pk_regions = tuple(regions)
+        self._pk_keys = {(h.i, h.j, h.length) for h in pk}
+
+    def _in_pk_region(self, helix: Helix) -> bool:
+        for lo, hi in self._pk_regions:
+            if helix.i <= hi and lo <= helix.j:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # candidate construction
@@ -387,15 +419,21 @@ class KineticEngine:
             if not self.pk_model.enabled or helix.length < self.pk_model.min_helix:
                 return float("inf")
             if self.pk_model.max_helices is not None:
-                helices = st.helices()
-                _core, pk = split_crossing(
-                    helices,
-                    stability=[self.energy.helix_stability(h) for h in helices],
-                )
+                _core, pk = self.energy.split(st.helices())
                 if len(pk) >= self.pk_model.max_helices:
                     return float("inf")
-        nested = not crossing and not self._crossing
-        return self.energy.delta_add(st.pt, helix, st.available, nested=nested)
+            return self.energy.delta_full(
+                st.helices(), helix, st.available, add=True, before=st.energy
+            )
+        if self._pk_regions and self._in_pk_region(helix):
+            return self.energy.delta_full(
+                st.helices(), helix, st.available, add=True, before=st.energy
+            )
+        # no crossing and clear of every pseudoknot region: the topology
+        # penalties are unchanged, so the core delta is the whole answer
+        return self.energy.delta_add(
+            self._core_pt, helix, st.available, nested=True
+        )
 
     def _refresh_slots(self) -> None:
         if not self._dirty:
@@ -426,20 +464,26 @@ class KineticEngine:
         st = self.state
         kT = self.energy.kT
         out: list[Move] = []
-        nested_state = not self._crossing
+        helices = st.helices() if self._crossing else ()
         for stem_index, helix in st.formed.items():
             stem = self.moveset.stems[stem_index]
-            nested = nested_state and not crosses_structure(
-                st.pt, helix.i, helix.j, st.available
+            local = not self._crossing or not (
+                (helix.i, helix.j, helix.length) in self._pk_keys
+                or self._in_pk_region(helix)
             )
             can_melt = (
                 self.mode == HELIX_MODE
                 or helix.length == self.moveset.nucleation_size
             )
             if can_melt:
-                dg = self.energy.delta_remove(
-                    st.pt, helix, st.available, nested=nested
-                )
+                if local:
+                    dg = self.energy.delta_remove(
+                        self._core_pt, helix, st.available, nested=True
+                    )
+                else:
+                    dg = self.energy.delta_full(
+                        helices, helix, st.available, add=False, before=st.energy
+                    )
                 out.append(
                     Move(MELT, helix, stem_index, dg, self.rates.rate(MELT, dg, kT))
                 )
@@ -454,9 +498,7 @@ class KineticEngine:
                     and st.pt[pair.i] < 0
                     and st.pt[pair.j] < 0
                 ):
-                    dg = self.energy.delta_add(
-                        st.pt, pair, st.available, nested=nested
-                    )
+                    dg = self._pair_delta(pair, add=True, local=local)
                     out.append(
                         Move(
                             ZIP_OUT,
@@ -470,9 +512,7 @@ class KineticEngine:
                 a, b = helix.inner
                 pair = Helix(a + 1, b - 1, 1)
                 if st.pt[pair.i] < 0 and st.pt[pair.j] < 0:
-                    dg = self.energy.delta_add(
-                        st.pt, pair, st.available, nested=nested
-                    )
+                    dg = self._pair_delta(pair, add=True, local=local)
                     out.append(
                         Move(
                             ZIP_IN, pair, stem_index, dg, self.rates.rate(ZIP_IN, dg, kT)
@@ -483,9 +523,7 @@ class KineticEngine:
                     (UNZIP_OUT, Helix(helix.i, helix.j, 1)),
                     (UNZIP_IN, Helix(*helix.inner, 1)),
                 ):
-                    dg = self.energy.delta_remove(
-                        st.pt, pair, st.available, nested=nested
-                    )
+                    dg = self._pair_delta(pair, add=False, local=local)
                     out.append(
                         Move(kind, pair, stem_index, dg, self.rates.rate(kind, dg, kT))
                     )
@@ -494,6 +532,19 @@ class KineticEngine:
         self._dyn_dirty = False
 
     # ------------------------------------------------------------------
+    def _pair_delta(self, pair: Helix, *, add: bool, local: bool) -> float:
+        """Delta for a single-base-pair zip/unzip in breathe mode."""
+        st = self.state
+        if local:
+            table = self._core_pt
+            if add:
+                return self.energy.delta_add(table, pair, st.available, nested=True)
+            return self.energy.delta_remove(table, pair, st.available, nested=True)
+        helices = st.helices()
+        return self.energy.delta_full(
+            helices, pair, st.available, add=add, before=st.energy
+        )
+
     def propensity(self) -> float:
         """Total escape rate from the current state."""
         self._refresh_slots()
@@ -569,7 +620,7 @@ class KineticEngine:
         self._touch(loop_positions(st.pt, closing, st.available))
         st.energy += move.dg
         self._update_crossings()
-        self._touch_pseudoknot_regions()
+        self._rebuild_core()
         self._dyn_dirty = True
 
     def _update_crossings(self) -> None:

@@ -61,6 +61,7 @@ class FoldingEnergy:
         self.n = len(seq)
         self.model = model or NearestNeighbourModel()
         self.pk_model = pk_model or PseudoknotModel()
+        self._stability: dict[tuple[int, int, int], float] = {}
 
     # ------------------------------------------------------------------
     @property
@@ -68,8 +69,21 @@ class FoldingEnergy:
         return self.model.kT
 
     def helix_stability(self, helix: Helix) -> float:
-        """Context-free stacking energy of one helix, kcal/mol."""
-        return helix_stack_energy(self.model, self.enc, helix)
+        """Context-free stacking energy of one helix, kcal/mol (memoised)."""
+        key = (helix.i, helix.j, helix.length)
+        value = self._stability.get(key)
+        if value is None:
+            value = helix_stack_energy(self.model, self.enc, helix)
+            self._stability[key] = value
+        return value
+
+    def split(self, helices: Sequence[Helix]) -> tuple[list[Helix], list[Helix]]:
+        """Deterministic nested-core / pseudoknot partition of a helix set."""
+        if len(helices) < 2:
+            return list(helices), []
+        return split_crossing(
+            helices, stability=[self.helix_stability(h) for h in helices]
+        )
 
     # ------------------------------------------------------------------
     def energy(self, helices: Iterable[Helix], n: int | None = None) -> float:
@@ -78,9 +92,7 @@ class FoldingEnergy:
         length = self.n if n is None else n
         if not helices:
             return 0.0
-        core, pk = split_crossing(
-            helices, stability=[self.helix_stability(h) for h in helices]
-        )
+        core, pk = self.split(helices)
         pt_core = pairtable_from_helices(core, self.n)
         total = self.model.eval_nested(self.enc, self.seq, pt_core, length)
         if pk:
@@ -170,6 +182,29 @@ class FoldingEnergy:
         if before >= FORBIDDEN * 100:
             return float("-inf")
         return (after - before - inner - stacks) / 100.0
+
+    def delta_full(
+        self,
+        helices: Sequence[Helix],
+        helix: Helix,
+        n: int,
+        *,
+        add: bool,
+        before: float | None = None,
+    ) -> float:
+        """Exact delta from full evaluation, given the known helix set.
+
+        Used whenever a move interacts with a pseudoknot, where the energy is
+        not a sum of independent loop terms.  ``before`` lets the caller supply
+        the current energy, which the engine already tracks, halving the work.
+        """
+        if before is None:
+            before = self.energy(helices, n)
+        if add:
+            after = self.energy(list(helices) + [helix], n)
+        else:
+            after = self.energy([h for h in helices if h != helix], n)
+        return after - before
 
     def _delta_full(
         self, pt: Sequence[int], helix: Helix, n: int, *, add: bool
