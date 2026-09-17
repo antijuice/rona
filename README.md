@@ -157,10 +157,12 @@ the right separation of timescales.
   deterministic function of that set, so the single-pair moves disappear.
   Rates come from a transition state rather than from ΔG, so nucleation
   barriers and the saddle of a helix-for-helix trade survive the lumping. About
-  3× the throughput and a state space smaller by a factor of 30, with the time
-  course tracking the microscopic chain to within 0.18 total variation in the
-  transient and 0.05 at long times. `docs/lumping.md` has the mathematics and
-  the measurements.
+  15× fewer events, a state space smaller by a factor of 30, and 1.4–4× more
+  simulated time per unit compute depending on whether pseudoknots are on — and
+  on a 127 nt input it is the only mode that finishes the schedule inside a sane
+  event budget. The time course tracks the microscopic chain to within 0.18
+  total variation in the sub-millisecond transient and 0.05 at long times.
+  `docs/lumping.md` has the mathematics and the measurements.
 * `breathe` — base-pair resolution: helices nucleate at a fixed window and then
   zip or unzip one pair at a time. Physically finer, much more expensive.
 
@@ -294,15 +296,21 @@ Worth being straight about.
   The simulator resolves every elementary event, and zipping a pair onto a helix
   end is a *futile* fast mode — measured on a 58 nt transcript, **99.7% of all
   events are zip/unzip**, with forward and reverse counts equal to three
-  significant figures. `--mode lumped` removes that degree of freedom exactly
+  significant figures. `--mode lumped` removes that degree of freedom
   (`docs/lumping.md`), which cuts the event count 15-fold and the state space
-  30-fold, but only about 3× off the wall clock: what is left is dominated by
-  futile *nucleation* — marginal helices flickering on and off at ~10⁵ s⁻¹ and
-  changing nothing — and lumping the window does not touch that. The next
-  reduction is to integrate the lumped master equation instead of sampling it,
-  which the small lumped state space now makes possible. For nested structures
-  above this size DrTransformer is still the better tool, and it is not close:
-  it handled a 127 nt input in seconds.
+  30-fold, but only 1.4–4× off the wall clock, because each remaining event
+  costs more. What is left is dominated by futile *nucleation* — marginal
+  helices flickering on and off at ~10⁵ s⁻¹ and changing nothing — and lumping
+  the window does not touch that. The next reduction is to integrate the lumped
+  master equation instead of sampling it, which the small lumped state space now
+  makes possible. For nested structures above this size DrTransformer is still
+  the better tool, and it is not close: it handled a 127 nt input in seconds.
+* **A long run can hit the event budget.** `--max-events` defaults to 2 million,
+  and the 127 nt riboswitch needs roughly 9 million in `helix` mode to cover its
+  13.6 s schedule. A truncated trajectory holds its last structure for the rest
+  of the run, so late times are frozen rather than simulated. This is now
+  reported — `Ensemble.truncated`, and a warning from the CLI — but it is a real
+  constraint, and the benchmark numbers below were produced with it in force.
 * **`k_zip` is a convergence parameter, not just a rate.** The default (10⁶ s⁻¹)
   is below the physical ~10⁷ s⁻¹ because event count scales linearly with it
   while the coarse result should not. `examples/05_timescale_separation.py`

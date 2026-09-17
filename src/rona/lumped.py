@@ -30,9 +30,8 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
-import random
 from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from typing import Iterable
 
 from .energy.evaluator import FoldingEnergy
 from .kinetics import EXCHANGE, MAX_EXPONENT, FORM, MELT, Move, RateModel
@@ -228,6 +227,7 @@ def slide_barrier(
     available: int,
     cache: dict,
     budget: int = 20000,
+    ceiling: float = 30.0,
 ) -> float:
     """Free energy of the lowest saddle between two window assignments.
 
@@ -249,7 +249,13 @@ def slide_barrier(
     number, which is what detailed balance needs.
 
     Memoised on the pair of assignments: the lumped chain revisits the same
-    transitions constantly, which is the whole point of lumping.
+    transitions constantly, which is the whole point of lumping.  The search is
+    also stopped once the saddle is ``ceiling`` kcal/mol above both endpoints,
+    and that value returned: such a transition has a rate below 10^-16 s^-1 in
+    either direction, so its exact height cannot matter, and the cut-off is the
+    same number from both sides, which is all detailed balance asks.  Without it
+    the hopeless transitions - which are most of them - cost as much to score as
+    the ones that carry the kinetics.
     """
     span_a = _intervals(moveset, windows_a)
     span_b = _intervals(moveset, windows_b)
@@ -263,22 +269,25 @@ def slide_barrier(
     if cached is not None:
         return cached
 
-    seen: dict[tuple, float] = {}
+    seen = cache.setdefault("energies", {})
 
     def energy_of(span, key):
-        value = seen.get(key)
+        value = seen.get((key, available))
         if value is None:
             value = energy.energy(
                 [_helix_of(moveset, i, v) for i, v in span.items()], available
             )
-            seen[key] = value
+            seen[(key, available)] = value
         return value
 
     counter = itertools.count()
     start = tuple(sorted(span_a.items()))
     goal = tuple(sorted(span_b.items()))
-    best = {start: energy_of(span_a, start)}
-    heap = [(best[start], next(counter), start)]
+    g_start = energy_of(span_a, start)
+    g_goal = energy_of(span_b, goal)
+    limit = max(g_start, g_goal) + ceiling
+    best = {start: g_start}
+    heap = [(g_start, next(counter), start)]
     answer = float("inf")
     spent = 0
     while heap:
@@ -288,17 +297,22 @@ def slide_barrier(
             break
         if top > best.get(key, float("inf")):
             continue
-        if spent > budget:  # pragma: no cover - guard for pathological cases
+        if top > limit or spent > budget:
+            answer = limit
             break
         span = dict(key)
         for trial in _steps(moveset, span, span_b, min_helix, available):
             trial_key = tuple(sorted(trial.items()))
-            spent += 1
             value = energy_of(trial, trial_key)
+            spent += 1
             reached = top if top > value else value
+            if reached > limit:
+                continue
             if reached < best.get(trial_key, float("inf")):
                 best[trial_key] = reached
                 heapq.heappush(heap, (reached, next(counter), trial_key))
+    if answer > limit:
+        answer = limit
     cache[cache_key] = answer
     return answer
 

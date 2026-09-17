@@ -138,11 +138,24 @@ are *known* to give different answers: the fluoride riboswitch **with** ligand,
 where the published analysis shows a ligand-dependent bifurcation that delays or
 promotes terminator formation. That is the obvious next experiment.
 
-### Cost
+### Cost, and a caveat on the numbers above
 
-The 127 nt riboswitch, ~710,000 events per trajectory, on four cores:
-**842 s** for 4 trajectories, **3,328 s** for 16. DrTransformer did the same
-input in seconds. rona is the slower tool by a wide margin, and
+The 127 nt riboswitch, on four cores: **842 s** for 4 trajectories, **3,328 s**
+for 16, at roughly 710,000 events per trajectory on average.
+
+That average hides something that only came to light later, and it belongs with
+the results: the default event budget is 2 million per trajectory, and covering
+this schedule in `helix` mode takes about **9 million**. Trajectories that fold
+into a low-propensity state early finish comfortably; those that do not stop
+partway and hold their last structure for the rest of the run. Late transcript
+lengths and the post-transcriptional equilibration are therefore frozen rather
+than simulated in some fraction of the ensemble, which will if anything have cost
+`rona` accuracy here rather than flattered it. `Trajectory.truncated` and
+`Ensemble.truncated` now record this and the CLI warns about it; `--mode lumped`
+needs about 15× fewer events and does not hit the cap on this input.
+
+`docs/lumping.md` has the per-mode cost measurements. DrTransformer did the same
+input in seconds; `rona` is the slower tool by a wide margin, and
 `docs/methods.md` explains why and what would fix it.
 
 ### Reproducing

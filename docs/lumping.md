@@ -218,17 +218,48 @@ microscopic:
 
 ### Speed
 
-On the 127 nt crcB riboswitch, cotranscriptional, one trajectory: lumped mode
-needs **15× fewer events** per second of simulated time (44,000 against
-674,000), and each event costs about 4× more, because a whole-helix move
-invalidates far more candidates than a zip does. Net throughput is about **3×**.
+Measured on the 127 nt crcB riboswitch at full length, starting from the open
+chain — the worst case, where every candidate is live. What matters is not events
+per second but **simulated time per second of compute**:
 
-That is a real gain and a smaller one than the event count suggests, and the
-reason is worth being clear about: the events lumping removes are the futile
-*zips*, but what remains is dominated by futile **nucleation** — marginal
-helices flickering on and off at ~10⁵ s⁻¹ and changing nothing. Lumping the
-window does not touch that. The next reduction is not another lumping: it is to
-stop sampling the lumped chain and integrate its master equation directly, which
-is now feasible because the lumped state space is small enough to enumerate
-(9 states where the microscopic chain has 336). That is what DrTransformer does,
-and this is the representation it needs.
+| mode | pseudoknots | events/s | µs/event | simulated s per wall s |
+|---|---|---|---|---|
+| lumped | on | 60 | 16,600 | **0.00091** |
+| helix | on | 376 | 2,660 | 0.00022 |
+| lumped | off | 200 | 4,990 | **0.00315** |
+| helix | off | 3,613 | 277 | 0.00220 |
+
+So lumped buys **4× more simulated time per unit compute with pseudoknots on,
+1.4× with them off**, by needing about 15× fewer events at 6–18× the cost each.
+It is also, on this system, the only mode that *finishes*: the microscopic chain
+needs roughly 9 million events to cover the riboswitch's 13.6 s schedule, against
+a default budget of 2 million, so it stops a quarter of the way through and holds
+its last structure — which is now recorded and warned about rather than silently
+reported as a prediction.
+
+Where the per-event cost goes, counted by call site over 60 events at full length
+(full `O(n)` energy evaluations per event):
+
+| | pseudoknots on | off |
+|---|---|---|
+| saddle search (`slide_barrier`) | 165 | 43 |
+| exchange candidates | 46 | 16 |
+| crossing form candidates | 87 | 2 |
+| everything else | ~2 | ~1 |
+| **microscopic mode, for comparison** | **19** | **0** |
+
+Two things stand out. The pseudoknot path is expensive in *both* modes — a
+candidate that crosses the structure cannot use a loop-local delta, and with
+them switched off the microscopic engine is fully incremental. And lumped mode's
+own overhead is the saddle search: it is memoised on the pair of window
+assignments, but that key changes whenever any helix moves, so the cache misses
+more than it should. Keying it on the local neighbourhood of the trade instead is
+the obvious next optimisation, and it is bounded work.
+
+What lumping does *not* fix is worth stating plainly. The events it removes are
+the futile zips; what remains is dominated by futile **nucleation** — marginal
+helices flickering on and off at ~10⁵ s⁻¹ and changing nothing. The next real
+reduction is not another lumping but to stop sampling the lumped chain and
+integrate its master equation directly, which is now feasible because the lumped
+state space is small enough to enumerate: 9 states where the microscopic chain
+has 336.

@@ -143,7 +143,9 @@ class RateModel:
     scheme: str = "metropolis"
 
     def prefactor(self, kind: str) -> float:
-        return self.k_zip if kind in (ZIP_IN, ZIP_OUT, UNZIP_IN, UNZIP_OUT) else self.k_nucleate
+        if kind in (ZIP_IN, ZIP_OUT, UNZIP_IN, UNZIP_OUT):
+            return self.k_zip
+        return self.k_nucleate
 
     def rate(self, kind: str, dg: float, kT: float) -> float:
         if dg == float("inf") or dg != dg:
@@ -715,36 +717,50 @@ class KineticEngine:
                 return False
         return True
 
-    def _blocked_by(self, windows, holder: int, blocked: int) -> bool:
+    def _blocked_by(self, owner, holder: int, blocked: int) -> bool:
         """Whether ``blocked`` cannot be placed, and ``holder`` alone is why.
 
-        A predicate on the *pair of states*, computed from each side's canonical
-        windows, so both directions of an exchange agree on whether the move
-        exists.  Without that the exchange would be a one-way door.
+        A predicate on the *pair of states*, read off each side's owner array, so
+        both directions of an exchange agree on whether the move exists.  Without
+        that the exchange would be a one-way door.
+
+        It is also the pre-filter that makes exchange enumeration affordable:
+        one scan of the challenger's ladder, no allocation, no placement of the
+        rest of the structure.  Nearly every competitor fails it.
         """
         stem = self.moveset.stems[blocked]
         avail = self.state.available
-        taken: set[int] = set()
-        held: set[int] = set()
-        for key, helix in windows.items():
-            (held if key == holder else taken).update(helix.positions())
-        if not (held & _ladder_positions(stem)):
-            return False
-        return self._run_length(stem, avail, taken | held) < self.min_helix <= (
-            self._run_length(stem, avail, taken)
-        )
-
-    def _run_length(self, stem, avail: int, taken) -> int:
-        best = run = 0
+        touches = False
+        best_all = best_free = run_all = run_free = 0
         for k in range(stem.length):
             a, b = stem.i + k, stem.j - k
-            if b < avail and a not in taken and b not in taken:
-                run += 1
-                if run > best:
-                    best = run
+            own_a, own_b = owner[a], owner[b]
+            if own_a == holder or own_b == holder:
+                touches = True
+            if b < avail and own_a < 0 and own_b < 0:
+                run_all += 1
+                if run_all > best_all:
+                    best_all = run_all
             else:
-                run = 0
-        return best
+                run_all = 0
+            if (
+                b < avail
+                and (own_a < 0 or own_a == holder)
+                and (own_b < 0 or own_b == holder)
+            ):
+                run_free += 1
+                if run_free > best_free:
+                    best_free = run_free
+            else:
+                run_free = 0
+        return touches and best_all < self.min_helix <= best_free
+
+    def _owner_of(self, windows) -> list[int]:
+        owner = [-1] * self.n
+        for index, helix in windows.items():
+            for position in helix.positions():
+                owner[position] = index
+        return owner
 
     def _lumped_exchanges(self, holder: int) -> list[Move]:
         """Moves that replace helix ``holder`` with a competitor of its own.
@@ -762,16 +778,18 @@ class KineticEngine:
         kT = self.energy.kT
         common = set(st.formed) - {holder}
         out: list[Move] = []
+        owner = self._owner
         for challenger in self._competitors[holder]:
             if challenger in st.formed:
+                continue
+            # cheap first: almost every competitor is not actually blocked
+            if not self._blocked_by(owner, holder, challenger):
                 continue
             target = common | {challenger}
             windows_b = self._canonical(target)
             if len(windows_b) != len(target) or challenger not in windows_b:
                 continue
-            if not self._blocked_by(st.formed, holder, challenger):
-                continue
-            if not self._blocked_by(windows_b, challenger, holder):
+            if not self._blocked_by(self._owner_of(windows_b), challenger, holder):
                 continue
             after = list(windows_b.values())
             if not self.pk_model.enabled and _any_crossing(after):
