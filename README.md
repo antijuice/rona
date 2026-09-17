@@ -260,10 +260,11 @@ Worth being straight about.
   The simulator resolves every elementary event, and zipping a pair onto a helix
   end is a *futile* fast mode — measured on a 58 nt transcript, **99.7% of all
   events are zip/unzip**, with forward and reverse counts equal to three
-  significant figures. A 127 nt riboswitch benchmark did not finish. Above this
-  size DrTransformer is the better tool for nested structures, and it is not
-  close: it handled the same 127 nt input in seconds. `docs/methods.md` sets out
-  the fix (lumping the fast mode, as Kinefold and DrTransformer both do).
+  significant figures. Above this size DrTransformer is the better tool for
+  nested structures, and it is not close: it handled a 127 nt input in seconds.
+  Removing the fast mode properly means lumping the helix-length degree of
+  freedom, which does not factorise cleanly because helices compete for
+  nucleotides — see `docs/methods.md`. That is the main open problem.
 * **`k_zip` is a convergence parameter, not just a rate.** The default (10⁶ s⁻¹)
   is below the physical ~10⁷ s⁻¹ because event count scales linearly with it
   while the coarse result should not. `examples/05_timescale_separation.py`

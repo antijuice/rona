@@ -28,8 +28,17 @@ is slower than every tool it is compared against.
   master equation deterministically, it pays nothing per event at all — it
   finished the same 127 nt riboswitch in seconds.
 
-**Assessment.** Both are the same idea: exploit timescale separation by lumping.
-The honest ranking of options for `rona`:
+A second, separate cost was found by profiling and *is* fixed: every move near
+a crossing helix fell back to full re-evaluation, costing 40 pseudoknot conflict
+graphs per event. A helix that crosses nothing cannot change the core/pseudoknot
+split or any region's extent, so only the per-unpaired term of the topology
+penalty moves — an O(1) correction. Throughput on the 127 nt riboswitch went
+from 184 to 336 events/s, and three energy bugs surfaced on the way (see
+`docs/validation.md` §2a).
+
+**Assessment.** Kinefold's and DrTransformer's answers are the same idea:
+exploit timescale separation by lumping. The honest ranking of options for
+`rona`:
 
 1. *Rate ceiling on the fast mode* (cheap, testable). The zipping rate only has
    to be fast relative to the slow modes; its exact value should not change the
@@ -37,11 +46,13 @@ The honest ranking of options for `rona`:
    `k_zip` values and comparing coarse observables — see
    `examples/05_timescale_separation.py`. It does not disturb detailed balance,
    because the stationary distribution does not depend on a rate prefactor.
-2. *Proper lumping of helix length* (correct, moderate work). Treat a helix's
-   length as an internal degree of freedom at local equilibrium and give the
-   coarse state its lumped free energy `-RT ln Σ exp(-G_i/RT)`. This is the
-   principled version and removes the fast mode entirely rather than slowing it
-   down.
+2. *Proper lumping of helix length* (correct, hard). Treat a helix's length as
+   an internal degree of freedom at local equilibrium and give the coarse state
+   its lumped free energy `-RT ln Σ exp(-G_i/RT)`. This removes the fast mode
+   entirely rather than slowing it down. The difficulty is that helices compete
+   for nucleotides, so their window distributions are *not* independent and the
+   sum does not factorise; a mean-field treatment would be an approximation
+   rather than exact lumping. This is research-scale, not an afternoon.
 3. *Full ECS / macrostate lumping across all fast transitions* (the Kinefold
    answer; substantial work).
 
