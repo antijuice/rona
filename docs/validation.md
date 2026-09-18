@@ -72,6 +72,30 @@ melt rather than at the saddle of a helix-for-helix trade — which froze the
 designed trap in `examples/01_kinetic_trap.py` at its initial 50/50 split
 forever. The numbers, and the mathematics, are in `docs/lumping.md`.
 
+## 2c. Cached rates, against a fresh engine — *exact*
+
+Rates are cached per candidate slot and per formed stem and dropped by loop-local
+invalidation. That is the part of the engine most able to be quietly wrong: a
+stale rate changes the kinetics and nothing else notices. So `tests/test_kinetics.py`
+walks the chain and, at intervals and whenever a pseudoknot is present, forces a
+*fresh* engine into the state reached and requires every propensity to agree —
+form candidates slot by slot, dynamic moves one for one — across all three move
+sets, with pseudoknots on and off.
+
+It earned its place immediately, with a defect that had survived every other
+check. The nested-core / pseudoknot partition is greedy, and when two helices
+tied on both crossing count and stability the tie fell to whichever came first in
+the caller's list. The simulator stores helices in a dict keyed by stem, whose
+order follows the history of the run — so **the free energy of a pseudoknotted
+state depended on how it had been reached** (-9.9 or -7.7 kcal/mol for the same
+state), a move's ΔG could disagree with its reverse by 2.2 kcal/mol, and detailed
+balance was broken. Ties now break on the helices' own coordinates.
+
+Why §2 missed it is worth recording: those tests build each state's helix list in
+one fixed order, so both directions of a transition agreed with each other while
+both could be wrong. An invariant tested only through one construction path is
+not tested.
+
 ## 3. Against experiment — *this is the one that matters*
 
 ### The data
@@ -138,7 +162,20 @@ are *known* to give different answers: the fluoride riboswitch **with** ligand,
 where the published analysis shows a ligand-dependent bifurcation that delays or
 promotes terminator formation. That is the obvious next experiment.
 
-### Cost, and a caveat on the numbers above
+### Two caveats on the numbers above
+
+Both were found after the table was produced, and both belong with it.
+
+**The pseudoknot ordering defect (§2c) was live when these ran.** Pseudoknots are
+enabled by default, so some fraction of the sampled states were scored with a
+free energy that depended on how they had been reached. The error is bounded by
+the topology penalty's per-unpaired term over one region — a couple of kcal/mol
+at worst, and only in states where two crossing helices tie — but the row for
+`rona` was measured before the fix and has not been re-measured since.
+
+**The event budget was in force.** See below.
+
+### Cost
 
 The 127 nt riboswitch, on four cores: **842 s** for 4 trajectories, **3,328 s**
 for 16, at roughly 710,000 events per trajectory on average.

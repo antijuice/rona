@@ -232,7 +232,10 @@ matrix from the [RNA Mapping Database](https://rmdb.stanford.edu/)
 | DrTransformer 2.x | +0.223 | +0.239 | 0.575 |
 
 `python examples/06_shape_benchmark.py` reproduces it; the script downloads the
-data itself.
+data itself. Two caveats found after the fact and recorded in
+`docs/validation.md`: these ran with the event budget in force (some trajectories
+froze partway), and with a pseudoknot free energy that depended on helix storage
+order, fixed since but not yet re-measured.
 
 Three caveats that matter. The correlations are modest for *everything* — SHAPE
 reports 2′-OH flexibility, not base pairing. The margins between the three are
