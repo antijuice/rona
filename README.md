@@ -157,10 +157,11 @@ the right separation of timescales.
   deterministic function of that set, so the single-pair moves disappear.
   Rates come from a transition state rather than from ΔG, so nucleation
   barriers and the saddle of a helix-for-helix trade survive the lumping. About
-  15× fewer events, a state space smaller by a factor of 30, and 1.4–4× more
-  simulated time per unit compute depending on whether pseudoknots are on — and
-  on a 127 nt input it is the only mode that finishes the schedule inside a sane
-  event budget. The time course tracks the microscopic chain to within 0.18
+  15× fewer events and a state space smaller by a factor of 30, and on a 127 nt
+  input it is the only mode that finishes the schedule inside the default event
+  budget. It is *not* reliably faster in wall clock — see `docs/lumping.md`,
+  where the controlled measurement and the end-to-end one disagree and both are
+  reported. The time course tracks the microscopic chain to within 0.18
   total variation in the sub-millisecond transient and 0.05 at long times, and
   it gets trap resolution right; where it is only approximate is how a
   population divides between two competing pathways, which can be off by ~0.2.
@@ -230,7 +231,7 @@ matrix from the [RNA Mapping Database](https://rmdb.stanford.edu/)
 | method | Spearman ρ | median per-length ρ | AUROC |
 |---|---|---|---|
 | **rona**, `helix` (16 trajectories) | **+0.289** | +0.311 | **+0.642** |
-| **rona**, `lumped` (4 trajectories, complete) | +0.282 | **+0.332** | 0.632 |
+| **rona**, `lumped` (8 trajectories, complete) | +0.289 | **+0.334** | 0.638 |
 | stepwise equilibrium (ViennaRNA per prefix) | +0.249 | +0.313 | 0.633 |
 | DrTransformer 2.x | +0.223 | +0.239 | 0.575 |
 
@@ -239,7 +240,7 @@ data itself. The two `rona` rows are not measured under the same conditions, and
 `docs/validation.md` says so: the `helix` row predates a pseudoknot energy fix and
 ran with the event budget in force, so part of that ensemble froze partway through
 its schedule. The `lumped` row is post-fix and every trajectory ran to completion,
-on a quarter of the sampling.
+on half the sampling.
 
 Three caveats that matter. The correlations are modest for *everything* — SHAPE
 reports 2′-OH flexibility, not base pairing. The margins between the three are
@@ -305,8 +306,9 @@ Worth being straight about.
   events are zip/unzip**, with forward and reverse counts equal to three
   significant figures. `--mode lumped` removes that degree of freedom
   (`docs/lumping.md`), which cuts the event count 15-fold and the state space
-  30-fold, but only 1.4–4× off the wall clock, because each remaining event
-  costs more. What is left is dominated by futile *nucleation* — marginal
+  30-fold, but each remaining event costs 6–18× more, and end to end on the
+  riboswitch benchmark that came out slower rather than faster. What is left to
+  remove is dominated by futile *nucleation* — marginal
   helices flickering on and off at ~10⁵ s⁻¹ and changing nothing — and lumping
   the window does not touch that. The next reduction is to integrate the lumped
   master equation instead of sampling it, which the small lumped state space now
