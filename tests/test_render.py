@@ -226,3 +226,58 @@ def test_movie_frames_render(ensemble):
     assert frames[0].dtype == np.uint8
     # consecutive frames should differ somewhere: the cursor moves at minimum
     assert any(not np.array_equal(frames[0], f) for f in frames[1:])
+
+
+def test_orient_horizontally_puts_the_long_axis_across():
+    """A tile is wide and short; a fold's own orientation is arbitrary."""
+    from rona.render.layout import orient_horizontally
+
+    # a tall, narrow cloud, rotated 90 degrees from where a tile wants it
+    coords = np.array([[0.0, float(k)] for k in range(20)])
+    coords[:, 0] += np.linspace(0, 0.4, 20)
+    turned = orient_horizontally(coords)
+    width = turned[:, 0].max() - turned[:, 0].min()
+    height = turned[:, 1].max() - turned[:, 1].min()
+    assert width > height
+    # deterministic end-to-end direction: 5' on the left
+    assert turned[0, 0] < turned[-1, 0]
+    # and it is a rigid motion, so every distance is preserved
+    for a, b in ((0, 5), (3, 19), (7, 11)):
+        before = float(np.linalg.norm(coords[a] - coords[b]))
+        after = float(np.linalg.norm(turned[a] - turned[b]))
+        assert after == pytest.approx(before, rel=1e-9)
+
+
+def test_gallery_tiles_carry_a_structure_layout(ensemble):
+    """The tiles draw the fold, so the page has to ship a layout for each one.
+
+    Computed with the same loop-circle code as the main panel rather than
+    reimplemented in JavaScript: a tile that disagreed with the big drawing
+    would be worse than no tile.
+    """
+    import json
+    import re
+
+    from rona.render.player import player_html
+
+    html = player_html(ensemble)
+    payload = re.search(
+        r'<script id="payload" type="application/json">(.*?)</script>', html, re.S
+    )
+    data = json.loads(payload.group(1))
+    layouts = data["tileLayouts"]
+    assert data["tileStyle"] == "structure"
+    labelled = [s for s in data["structures"] if s != data["openChain"]]
+    assert labelled, "the fixture should produce at least one folded band"
+    for label in labelled:
+        assert label in layouts, f"no tile layout for {label}"
+        entry = layouts[label]
+        assert len(entry["xy"]) == len(label)
+        # every pair in the dot-bracket has a rung to draw
+        expected = sum(1 for c in label if c in "([{<")
+        assert len(entry["pairs"]) == expected
+        for i, j in entry["pairs"]:
+            assert 0 <= i < j < len(label)
+    # and the viewer can switch to arcs
+    assert 'id="tiles"' in html
+    assert "drawMini" in html and "drawArcs" in html

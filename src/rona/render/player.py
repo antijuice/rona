@@ -21,7 +21,14 @@ import numpy as np
 
 from ..struct import helices_from_pairtable, iter_pairs, parse_dotbracket
 from . import colors
-from .layout import LayoutOptions, bounding_box, camera_path, layout_series
+from .layout import (
+    LayoutOptions,
+    bounding_box,
+    camera_path,
+    layout_series,
+    layout_structure,
+    orient_horizontally,
+)
 from .overview import OPEN_CHAIN, kymograph_data_uri, top_bands
 
 
@@ -31,6 +38,9 @@ class PlayerOptions:
     subtitle: str = ""
     pair_threshold: float = 0.05
     max_bands: int = 10
+    #: What a gallery tile draws: ``structure`` or ``arcs``.  The viewer can
+    #: switch; this is only what it opens on.
+    tile_style: str = "structure"
     #: Playback speed in sampled frames per second.
     fps: int = 20
 
@@ -80,6 +90,23 @@ def _frame_payload(
     labels, occupancy = ensemble.occupancy(min_population=0.02)
     labels, occupancy = top_bands(labels, occupancy, ensemble.times, opt.max_bands)
 
+    # Layouts for the gallery tiles, computed here rather than in the browser:
+    # this is the same loop-circle layout the main panel uses, so a tile and the
+    # big drawing agree, and there is only one implementation of it to be right.
+    # There are at most ``max_bands`` distinct labels, so the cost is trivial.
+    tile_layouts = {}
+    for label in labels:
+        if label == OPEN_CHAIN or len(label) < 3:
+            continue
+        coords = layout_structure(label)
+        if not len(coords):
+            continue
+        coords = orient_horizontally(coords)
+        tile_layouts[label] = {
+            "xy": [[round(float(x), 2), round(float(y), 2)] for x, y in coords],
+            "pairs": [[i, j] for i, j in iter_pairs(parse_dotbracket(label))],
+        }
+
     return {
         "sequence": ensemble.seq,
         "times": [round(float(t), 4) for t in ensemble.times],
@@ -88,6 +115,8 @@ def _frame_payload(
         "box": [round(v, 3) for v in box],
         "occupancy": [[round(float(v), 4) for v in row] for row in occupancy],
         "structures": labels,
+        "tileLayouts": tile_layouts,
+        "tileStyle": opt.tile_style,
         "energy": [round(float(v), 3) for v in ensemble.mean_energy()],
         "energySd": [round(float(v), 3) for v in ensemble.energy_spread()],
         "pkFraction": [round(float(v), 4) for v in ensemble.pseudoknot_fraction()],
@@ -203,6 +232,7 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
     <option value="dominant">Dominant structure only</option>
   </select>
   <button id="letters">Letters: auto</button>
+  <button id="tiles">Tiles: structure</button>
   <button id="theme">Theme</button>
 </div>
 <main>
@@ -260,6 +290,11 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
   let playing = false;
   let speed = 1;
   let lettersMode = "auto";
+  let tileStyle = D.tileStyle || "structure";
+  try {
+    const saved = localStorage.getItem("rona.tileStyle");
+    if (saved === "structure" || saved === "arcs") tileStyle = saved;
+  } catch (e) { /* private window, blocked storage: the default is fine */ }
   let mode = "ensemble";
   let lastTick = 0;
 
@@ -473,8 +508,58 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
       ctx.fillText(Math.round(tile.width * 100) + "%", x0 + tw / 2, h - 4);
 
       if (!tile.label || tile.label === D.openChain) continue;
-      drawArcs(ctx, tile.label, x0 + 4, x0 + tw - 4, h - labelH - 6, 6);
+      const wide = tw > 46;
+      if (tileStyle === "structure" && wide && D.tileLayouts[tile.label]) {
+        drawMini(ctx, tile.label, x0 + 4, x0 + tw - 4, 6, h - labelH - 6);
+      } else {
+        drawArcs(ctx, tile.label, x0 + 4, x0 + tw - 4, h - labelH - 6, 6);
+      }
     }
+  }
+
+  // A miniature secondary structure: the same loop-circle layout as the main
+  // panel, scaled into the tile.  Below about 46px a 2D drawing stops resolving
+  // and the arc diagram is used instead, whatever the setting says.
+  function drawMini(ctx, db, x0, x1, yTop, yBottom) {
+    const layout = D.tileLayouts[db];
+    if (!layout) return;
+    const xy = layout.xy;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [x, y] of xy) {
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    const spanX = (maxX - minX) || 1, spanY = (maxY - minY) || 1;
+    // aspect preserved: a squashed fold reads as a different fold
+    const scale = Math.min((x1 - x0) / spanX, (yBottom - yTop) / spanY);
+    const ox = (x0 + x1) / 2 - scale * (minX + maxX) / 2;
+    const oy = (yTop + yBottom) / 2 - scale * (minY + maxY) / 2;
+    const px = (k) => ox + scale * xy[k][0];
+    const py = (k) => oy + scale * xy[k][1];
+
+    ctx.strokeStyle = css("--muted");
+    ctx.globalAlpha = 0.7;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px(0), py(0));
+    for (let k = 1; k < xy.length; k++) ctx.lineTo(px(k), py(k));
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    ctx.lineWidth = 1.4;
+    for (const [i, j] of layout.pairs) {
+      ctx.strokeStyle = pairCentreColor(i, j, N);
+      ctx.beginPath();
+      ctx.moveTo(px(i), py(i));
+      ctx.lineTo(px(j), py(j));
+      ctx.stroke();
+    }
+    ctx.fillStyle = css("--text");
+    ctx.beginPath();
+    ctx.arc(px(0), py(0), 1.6, 0, 6.2832);
+    ctx.fill();
   }
 
   // A miniature arc diagram: readable at tile size in a way a 2D drawing is not.
@@ -679,12 +764,19 @@ input[type=range] { flex: 1 1 220px; min-width: 160px; accent-color: var(--accen
     this.textContent = "Letters: " + lettersMode;
     render();
   });
+  el("tiles").addEventListener("click", function () {
+    tileStyle = tileStyle === "structure" ? "arcs" : "structure";
+    this.textContent = "Tiles: " + tileStyle;
+    try { localStorage.setItem("rona.tileStyle", tileStyle); } catch (e) { /* ignore */ }
+    render();
+  });
   el("theme").addEventListener("click", function () {
     const root = document.documentElement;
     const now = root.getAttribute("data-theme");
     root.setAttribute("data-theme", now === "dark" ? "light" : "dark");
     render();
   });
+  el("tiles").textContent = "Tiles: " + tileStyle;
   window.addEventListener("resize", render);
   document.addEventListener("keydown", function (event) {
     if (event.key === " ") { event.preventDefault(); setPlaying(!playing); }

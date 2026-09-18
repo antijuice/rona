@@ -251,7 +251,10 @@ def cmd_fold(args) -> int:
         write_player(
             ensemble,
             str(path),
-            options=PlayerOptions(title=f"{name} — cotranscriptional folding"),
+            options=PlayerOptions(
+                title=f"{name} — cotranscriptional folding",
+                tile_style=args.tile_style,
+            ),
         )
         written.append(str(path))
     if args.svg:
@@ -297,6 +300,7 @@ def cmd_fold(args) -> int:
                 mode=args.movie_mode,
                 fps=args.fps,
                 interpolation=args.interpolation,
+                tile_style=args.tile_style,
                 title=f"{name} — cotranscriptional folding kinetics",
             ),
         )
@@ -406,6 +410,11 @@ def build_parser() -> argparse.ArgumentParser:
     fold.add_argument("--movie-mode", choices=("ensemble", "dominant", "trajectory"),
                       default="ensemble", help="what the movie shows (default ensemble)")
     fold.add_argument("--fps", type=int, default=24, help="movie frame rate")
+    fold.add_argument("--tile-style", choices=("structure", "arcs"),
+                      default="structure",
+                      help="what a gallery tile draws: a miniature secondary "
+                           "structure (default) or an arc diagram; narrow tiles "
+                           "fall back to arcs either way")
     fold.add_argument("--interpolation", type=int, default=4,
                       help="tweened frames between sampled time points")
     fold.add_argument("--target", default=None, metavar="DOTBRACKET",

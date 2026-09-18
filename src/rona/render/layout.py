@@ -370,6 +370,26 @@ def layout_structure(
     return _relax(coords, nested_pt, crossing, n, opt, braces)
 
 
+def orient_horizontally(coords: np.ndarray) -> np.ndarray:
+    """Rotate a layout so its longest extent runs left to right.
+
+    A structure drawn in a wide, short box - a gallery tile - is legible in
+    proportion to how much of the box it fills, and a fold's natural orientation
+    has nothing to do with the box it lands in.  The principal axis is put on the
+    horizontal and the 5' end on the left, which also makes the orientation a
+    function of the structure rather than of how the layout happened to converge.
+    """
+    if len(coords) < 2:
+        return coords
+    centred = coords - coords.mean(axis=0)
+    # principal axis of the point cloud
+    _u, _s, vt = np.linalg.svd(centred, full_matrices=False)
+    rotated = centred @ vt.T
+    if rotated[0, 0] > rotated[-1, 0]:
+        rotated = -rotated
+    return rotated
+
+
 def kabsch_align(
     moving: np.ndarray, reference: np.ndarray, count: int | None = None
 ) -> np.ndarray:

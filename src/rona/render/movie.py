@@ -71,6 +71,10 @@ class MovieOptions:
     color_pairs_by_centre: bool = True
     #: Structures below this population get no tile.
     gallery_threshold: float = 0.02
+    #: What each gallery tile draws: ``structure`` for a miniature secondary
+    #: structure, ``arcs`` for an arc diagram.  A structure drawing is what the
+    #: eye reads as a fold; arcs stay legible in a tile only a few pixels wide.
+    tile_style: str = "structure"
 
 
 def _require_matplotlib():
@@ -342,9 +346,11 @@ def _draw_kymograph(ax, ensemble, index, times) -> None:
 def _draw_gallery(ax, labels, column, n_total, opt) -> None:
     """Competing structures as tiles whose width is their population.
 
-    Each tile carries a miniature arc diagram rather than a 2D drawing: at tile
-    size an arc diagram stays readable, and with pairs coloured by centre the
-    differences between competing structures are visible directly.
+    Each tile carries a miniature secondary structure by default - that is what
+    the eye reads as a fold, and it is what makes two competing structures
+    recognisably different rather than merely differently striped.  Below a few
+    tens of pixels a 2D drawing stops resolving, so ``tile_style="arcs"`` falls
+    back to an arc diagram, which stays legible at any width.
     """
     ax.clear()
     ax.set_facecolor(colors.ELEMENT_COLORS["background"])
@@ -372,7 +378,10 @@ def _draw_gallery(ax, labels, column, n_total, opt) -> None:
         )
         if tile.index < 0 or tile.label == OPEN_CHAIN:
             continue
-        _mini_arcs(ax, tile.label, x0, x1, 0.02, 0.92, n_total)
+        if opt.tile_style == "arcs" or (x1 - x0) < 0.045:
+            _mini_arcs(ax, tile.label, x0, x1, 0.02, 0.92, n_total)
+        else:
+            _mini_structure(ax, tile.label, x0, x1, 0.02, 0.92, n_total)
 
     ax.set_title(
         "structures in the ensemble now \u00b7 width = population",
@@ -384,6 +393,48 @@ def plt_rectangle(xy, width, height, **kwargs):
     from matplotlib.patches import Rectangle
 
     return Rectangle(xy, width, height, **kwargs)
+
+
+def _mini_structure(ax, structure, x0, x1, y0, y1, n_total) -> None:
+    """A miniature secondary-structure drawing inside a tile.
+
+    The same loop-circle layout the main panel uses, scaled into the tile: the
+    backbone as one thin path, each base pair as a rung coloured by its centre so
+    a helix keeps a single colour, and a marker at the 5' end for orientation.
+    """
+    from .layout import layout_structure, orient_horizontally
+
+    pt = parse_dotbracket(structure)
+    if len(pt) < 3:
+        return
+    coords = layout_structure(structure)
+    if not len(coords):
+        return
+    coords = orient_horizontally(coords)
+    xs, ys = coords[:, 0], coords[:, 1]
+    width = float(xs.max() - xs.min()) or 1.0
+    height = float(ys.max() - ys.min()) or 1.0
+    scale = min((x1 - x0) / width, (y1 - y0) / height)
+    # centred in the tile, aspect preserved - a squashed fold reads as a
+    # different fold
+    ox = (x0 + x1) / 2.0 - scale * (float(xs.min()) + float(xs.max())) / 2.0
+    oy = (y0 + y1) / 2.0 - scale * (float(ys.min()) + float(ys.max())) / 2.0
+    px, py = ox + scale * xs, oy + scale * ys
+    ax.plot(
+        px, py,
+        color=colors.ELEMENT_COLORS["muted"], linewidth=0.8, alpha=0.75,
+        solid_capstyle="round", zorder=2,
+    )
+    for i, j in iter_pairs(pt):
+        ax.plot(
+            [px[i], px[j]], [py[i], py[j]],
+            color=colors.pair_center_color(i, j, n_total),
+            linewidth=1.3, alpha=0.95, solid_capstyle="round", zorder=3,
+        )
+    ax.plot(
+        [px[0]], [py[0]], marker="o", markersize=1.8,
+        color=colors.ELEMENT_COLORS["text"], zorder=4,
+    )
 
 
 def _mini_arcs(ax, structure, x0, x1, y0, y1, n_total) -> None:
