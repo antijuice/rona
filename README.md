@@ -229,15 +229,17 @@ matrix from the [RNA Mapping Database](https://rmdb.stanford.edu/)
 
 | method | Spearman ρ | median per-length ρ | AUROC |
 |---|---|---|---|
-| **rona** (16 trajectories) | **+0.289** | +0.311 | **+0.642** |
-| stepwise equilibrium (ViennaRNA per prefix) | +0.249 | **+0.313** | 0.633 |
+| **rona**, `helix` (16 trajectories) | **+0.289** | +0.311 | **+0.642** |
+| **rona**, `lumped` (4 trajectories, complete) | +0.282 | **+0.332** | 0.632 |
+| stepwise equilibrium (ViennaRNA per prefix) | +0.249 | +0.313 | 0.633 |
 | DrTransformer 2.x | +0.223 | +0.239 | 0.575 |
 
 `python examples/06_shape_benchmark.py` reproduces it; the script downloads the
-data itself. Two caveats found after the fact and recorded in
-`docs/validation.md`: these ran with the event budget in force (some trajectories
-froze partway), and with a pseudoknot free energy that depended on helix storage
-order, fixed since but not yet re-measured.
+data itself. The two `rona` rows are not measured under the same conditions, and
+`docs/validation.md` says so: the `helix` row predates a pseudoknot energy fix and
+ran with the event budget in force, so part of that ensemble froze partway through
+its schedule. The `lumped` row is post-fix and every trajectory ran to completion,
+on a quarter of the sampling.
 
 Three caveats that matter. The correlations are modest for *everything* — SHAPE
 reports 2′-OH flexibility, not base pairing. The margins between the three are

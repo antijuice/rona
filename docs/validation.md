@@ -130,9 +130,18 @@ reactivity, over the whole length x position matrix. The polymerase footprint
 
 | method | Spearman ρ | median per-length ρ | AUROC |
 |---|---|---|---|
-| **rona** (kinetic SSA, 16 trajectories) | **+0.289** | +0.311 | **0.642** |
-| stepwise equilibrium (ViennaRNA per prefix) | +0.249 | **+0.313** | 0.633 |
+| **rona**, `helix` (kinetic SSA, 16 trajectories) | **+0.289** | +0.311 | **0.642** |
+| **rona**, `lumped` (4 trajectories, complete) | +0.282 | **+0.332** | 0.632 |
+| stepwise equilibrium (ViennaRNA per prefix) | +0.249 | +0.313 | 0.633 |
 | DrTransformer 2.x | +0.223 | +0.239 | 0.575 |
+
+The two `rona` rows are not measured under the same conditions, and the
+difference favours the second. The `helix` row predates the pseudoknot ordering
+fix (§2c) and ran with the event budget in force, so part of that ensemble was
+frozen partway through its schedule. The `lumped` row is post-fix, and all four
+of its trajectories ran to completion — 673,000 events each against a 2,000,000
+budget, **0 truncated** — on a quarter of the sampling. It also gives the best
+per-length median of any method here.
 
 rona improves monotonically with sampling — ρ = +0.264 at 4 trajectories,
 +0.289 at 16 — so what limits it here is Monte Carlo noise rather than the
