@@ -208,6 +208,19 @@ The transient lags, and it must: a whole helix appears in one lumped event where
 the microscopic chain zips it pair by pair, so lumped folding runs slightly
 ahead below a millisecond. By the time anything is observable the two agree.
 
+The exception is the fifth row, and it says where the accuracy limit actually
+lies. That sequence has a fork: an early state decays either into a long-lived
+competing pair of helices or into the eventual ground state, and the two chains
+apportion it differently — 0.70/0.25 lumped against 0.49/0.48 microscopic, held
+for four decades until both relax to the same equilibrium. Nothing is frozen and
+no state is missing; the **branching ratio** at the fork is off, by the ~0.6
+kcal/mol that separates two barrier estimates. That is the expected size of
+error: the saddle is the lowest over *monotone* paths, which is a lower bound on
+the true one, and a few tenths of a kcal/mol at a fork is a factor of 2–3 in a
+commitment probability. Read lumped mode as reliable for equilibrium, for
+whether a trap resolves and on what timescale, and as approximate for how a
+population divides between two competing pathways.
+
 The trap, in populations rather than distances — 9 lumped states against 336
 microscopic:
 

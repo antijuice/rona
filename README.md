@@ -161,7 +161,9 @@ the right separation of timescales.
   simulated time per unit compute depending on whether pseudoknots are on — and
   on a 127 nt input it is the only mode that finishes the schedule inside a sane
   event budget. The time course tracks the microscopic chain to within 0.18
-  total variation in the sub-millisecond transient and 0.05 at long times.
+  total variation in the sub-millisecond transient and 0.05 at long times, and
+  it gets trap resolution right; where it is only approximate is how a
+  population divides between two competing pathways, which can be off by ~0.2.
   `docs/lumping.md` has the mathematics and the measurements.
 * `breathe` — base-pair resolution: helices nucleate at a fixed window and then
   zip or unzip one pair at a time. Physically finer, much more expensive.
