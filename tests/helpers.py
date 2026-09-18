@@ -42,6 +42,10 @@ def set_state(engine, key: StateKey) -> None:
         st.formed[stem_index] = helix
     engine._dirty = set(range(engine.n_slots))
     engine._dyn_dirty = True
+    # forcing an arbitrary state is not a move, so nothing the engine cached
+    # about the previous one may be reused
+    engine._dyn_cache.clear()
+    engine._dyn_dirty_stems.clear()
     engine._update_crossings()
     # st.pt was replaced, so every derived table has to be rebuilt
     engine._rebuild_core()

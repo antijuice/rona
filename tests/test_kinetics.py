@@ -227,3 +227,71 @@ def test_state_reconstruction_round_trips():
     set_state(engine, key)
     assert state_key(engine) == key
     assert engine.state.energy == pytest.approx(energy)
+
+
+@pytest.mark.parametrize("mode", ["helix", "lumped", "breathe"])
+@pytest.mark.parametrize("pk", [False, True])
+def test_cached_rates_match_a_fresh_engine(mode, pk):
+    """Nothing may survive a move that the move invalidated.
+
+    Rates are cached per slot and per stem and dropped by loop-local
+    invalidation, which is the part of the engine most able to be quietly
+    wrong: a stale rate changes the kinetics and nothing else notices.  So walk
+    the chain and, at intervals, put a *fresh* engine into the state reached and
+    require every propensity to agree - the form candidates slot by slot, and
+    the dynamic moves one for one.
+
+    The sequence is the H-type pseudoknot from ``examples/03``, so that with
+    pseudoknots enabled the comparison actually covers the paths where the
+    energy is not loop-local; the test asserts that it did.
+    """
+    import random
+
+    sequence = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCGAAAGGCGGCC"
+    walked = make_engine(sequence, mode=mode, pk=pk)
+    fresh = make_engine(sequence, mode=mode, pk=pk)
+    rng = random.Random(19)
+    knotted = 0
+    checks = 0
+
+    def compare():
+        walked.propensity()
+        set_state(fresh, state_key(walked))
+        fresh.propensity()
+        assert state_key(fresh) == state_key(walked)
+        assert fresh.state.energy == pytest.approx(walked.state.energy, abs=1e-9)
+        for slot in range(walked.n_slots):
+            assert walked._fen.value(slot) == pytest.approx(
+                fresh._fen.value(slot), rel=1e-9, abs=1e-12
+            ), f"slot {slot} carries a stale form rate"
+
+        def signature(engine):
+            return sorted(
+                (m.kind, m.stem, m.other, m.helix.i, m.helix.j, m.helix.length, m.rate)
+                for m in engine._dyn
+            )
+
+        left, right = signature(walked), signature(fresh)
+        assert len(left) == len(right)
+        for a, b in zip(left, right):
+            assert a[:6] == b[:6]
+            assert a[6] == pytest.approx(b[6], rel=1e-9, abs=1e-12)
+
+    for step in range(400):
+        total = walked.propensity()
+        if total <= 0.0:
+            break
+        move = walked.select(rng.random())
+        if move is None:
+            break
+        walked.apply(move)
+        crossing = walked.has_pseudoknot()
+        # every so often, and whenever a pseudoknot is present, since that is
+        # where the energy stops being loop-local
+        if step % 40 == 39 or (crossing and knotted < 5):
+            knotted += crossing
+            compare()
+            checks += 1
+    assert checks > 5
+    if pk:
+        assert knotted > 0, "the walk never reached a pseudoknotted state"

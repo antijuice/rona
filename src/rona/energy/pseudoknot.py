@@ -127,6 +127,13 @@ def split_crossing(
 
     ``stability`` optionally supplies a per-helix free energy (more negative =
     more stable); when omitted, helix length is used as a proxy.
+
+    Ties are broken by the helices' own coordinates, never by the order they
+    arrive in.  That matters more than it looks: the partition decides which
+    helices pay the topology penalty, so an order-dependent tie would make the
+    free energy of a state depend on the order its helices happened to be
+    stored in - and a free energy that is not a function of the state breaks
+    detailed balance.
     """
     adj = conflict_graph(helices)
     if not any(adj):
@@ -146,8 +153,17 @@ def split_crossing(
         ]
         if not live:
             break
-        # most crossings first; among those, drop the least stable helix
-        live.sort(key=lambda t: (-t[0], -t[1]))
+        # most crossings first; among those, drop the least stable helix;
+        # among those, the one earliest in sequence
+        live.sort(
+            key=lambda t: (
+                -t[0],
+                -t[1],
+                helices[t[2]].i,
+                helices[t[2]].j,
+                helices[t[2]].length,
+            )
+        )
         removed.add(live[0][2])
 
     core = [h for k, h in enumerate(helices) if k not in removed]

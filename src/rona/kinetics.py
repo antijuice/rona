@@ -946,8 +946,11 @@ class KineticEngine:
         """Melt and zip/unzip moves for formed helices, rebuilt per stem."""
         st = self.state
         formed = st.formed
-        # drop helices that no longer exist
-        if len(self._dyn_cache) != len(formed):
+        # drop helices that no longer exist.  Comparing the key sets rather
+        # than their sizes: a move that swaps one stem for another leaves the
+        # count alone, and a cached melt for a helix that is gone is a move the
+        # sampler can pick.
+        if self._dyn_cache.keys() != formed.keys():
             for stem_index in list(self._dyn_cache):
                 if stem_index not in formed:
                     del self._dyn_cache[stem_index]

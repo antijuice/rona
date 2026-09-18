@@ -192,3 +192,57 @@ def test_pseudoknot_energy_is_path_independent():
     fe = FoldingEnergy("GGCGAAAGCCAAAAGGCGAAAGCCUUUU")
     helices = [Helix(0, 9, 3), Helix(4, 24, 3)]
     assert fe.energy(helices, 28) == pytest.approx(fe.energy(helices[::-1], 28))
+
+
+def test_energy_does_not_depend_on_the_order_helices_are_listed_in():
+    """A free energy that is not a function of the state breaks everything.
+
+    The nested-core / pseudoknot partition is greedy, and a greedy rule with an
+    order-dependent tie-break makes the topology penalty depend on the order the
+    caller happened to store its helices in.  The simulator stores them in a
+    dict keyed by stem, whose order follows the history of the run, so the same
+    state could be scored two ways and a move's dG could disagree with its
+    reverse by kcal/mol.
+    """
+    import itertools
+    import random
+
+    from rona.energy.evaluator import FoldingEnergy
+    from rona.energy.model import NearestNeighbourModel
+    from rona.energy.pseudoknot import PseudoknotModel
+    from rona.struct import Helix
+
+    sequence = "GGCGCGGCACCGUCCGCGGAACAAACGGAGAAGGGGCCGCCGAAAGGCGGCC"
+    energy = FoldingEnergy(
+        sequence, NearestNeighbourModel(), PseudoknotModel(enabled=True)
+    )
+    # a pseudoknotted state: (9,18) threads through (12,28)
+    states = [
+        # two crossing helices of equal length: the greedy partition has to
+        # choose one, and the choice must not come from the list order
+        [Helix(0, 51, 3), Helix(5, 37, 3), Helix(9, 18, 3), Helix(13, 27, 3),
+         Helix(38, 47, 3)],
+        [Helix(0, 51, 3), Helix(5, 37, 3), Helix(9, 18, 3), Helix(12, 28, 4),
+         Helix(38, 47, 3)],
+        [Helix(0, 51, 3), Helix(9, 18, 3), Helix(13, 27, 3)],
+    ]
+    rng = random.Random(5)
+    for helices in states:
+        reference = energy.energy(helices, len(sequence))
+        core, pk = energy.split(helices)
+        core_key = sorted((h.i, h.j, h.length) for h in core)
+        for _ in range(12):
+            shuffled = list(helices)
+            rng.shuffle(shuffled)
+            assert energy.energy(shuffled, len(sequence)) == pytest.approx(
+                reference, abs=1e-12
+            )
+            again, _pk = energy.split(shuffled)
+            assert sorted((h.i, h.j, h.length) for h in again) == core_key
+    # and exhaustively on the smallest one
+    smallest = states[2]
+    reference = energy.energy(smallest, len(sequence))
+    for order in itertools.permutations(smallest):
+        assert energy.energy(list(order), len(sequence)) == pytest.approx(
+            reference, abs=1e-12
+        )
