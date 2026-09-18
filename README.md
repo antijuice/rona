@@ -157,11 +157,11 @@ the right separation of timescales.
   deterministic function of that set, so the single-pair moves disappear.
   Rates come from a transition state rather than from ΔG, so nucleation
   barriers and the saddle of a helix-for-helix trade survive the lumping. About
-  15× fewer events and a state space smaller by a factor of 30, and on a 127 nt
-  input it is the only mode that finishes the schedule inside the default event
-  budget. It is *not* reliably faster in wall clock — see `docs/lumping.md`,
-  where the controlled measurement and the end-to-end one disagree and both are
-  reported. The time course tracks the microscopic chain to within 0.18
+  15× fewer events, a state space smaller by a factor of 30, and at equal
+  coverage at least 4× the throughput end to end — 2.6 h for four trajectories of
+  a 127 nt schedule that the microscopic mode had not finished after ten. It is
+  also the only mode that finishes that schedule inside the default event budget.
+  The time course tracks the microscopic chain to within 0.18
   total variation in the sub-millisecond transient and 0.05 at long times, and
   it gets trap resolution right; where it is only approximate is how a
   population divides between two competing pathways, which can be off by ~0.2.
@@ -306,9 +306,8 @@ Worth being straight about.
   events are zip/unzip**, with forward and reverse counts equal to three
   significant figures. `--mode lumped` removes that degree of freedom
   (`docs/lumping.md`), which cuts the event count 15-fold and the state space
-  30-fold, but each remaining event costs 6–18× more, and end to end on the
-  riboswitch benchmark that came out slower rather than faster. What is left to
-  remove is dominated by futile *nucleation* — marginal
+  30-fold and buys at least 4× end to end, though each remaining event costs
+  6–18× more. What is left to remove is dominated by futile *nucleation* — marginal
   helices flickering on and off at ~10⁵ s⁻¹ and changing nothing — and lumping
   the window does not touch that. The next reduction is to integrate the lumped
   master equation instead of sampling it, which the small lumped state space now

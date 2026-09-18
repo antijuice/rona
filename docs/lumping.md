@@ -231,44 +231,47 @@ microscopic:
 
 ### Speed
 
-Two measurements, and they disagree, so both are here.
+**End to end, which is the measurement that settles it.** Four trajectories on
+four cores, covering the whole 13.6 s schedule:
 
-**Controlled, at full length from the open chain** — every candidate live, which
-is the worst case for both modes. What matters is not events per second but
-simulated time per second of compute:
+| mode | wall clock | events/trajectory | truncated |
+|---|---|---|---|
+| lumped | **9,240 s** and **9,302 s** (two batches) | ~660,000 | 0 of 8 |
+| helix, budget raised to 25M | **> 36,400 s**, not finished | — | — |
 
-| mode | pseudoknots | events/s | µs/event | simulated s per wall s |
-|---|---|---|---|---|
-| lumped | on | 60 | 16,600 | **0.00091** |
-| helix | on | 376 | 2,660 | 0.00022 |
-| lumped | off | 200 | 4,990 | **0.00315** |
-| helix | off | 3,613 | 277 | 0.00220 |
+So at equal coverage lumped is **at least 4× faster**, and that is a lower bound:
+the microscopic run was killed at ten hours rather than completing.
 
-On that measurement lumped buys 4× the throughput with pseudoknots on and 1.4×
-with them off, by needing ~15× fewer events at 6–18× the cost each.
+Two other numbers are in circulation and neither is a speed comparison. The
+microscopic mode spends the *default* 2,000,000-event budget in 842 s — but that
+covers only about 3.2 s of the 13.6 s schedule, so extrapolating its event rate
+from there understates its cost badly, because the early phase is the cheap one
+(short transcripts, few live candidates, no pseudoknots yet).
 
-**End to end on the riboswitch benchmark**, four trajectories on four cores, it
-comes out the other way. Lumped covers the whole 13.6 s schedule in **9,240 s**
-at 660,000 events per trajectory, none truncated. The microscopic mode reaches
-the default 2,000,000-event budget in **842 s**, having covered about 3.2 s of
-that schedule — so at its measured rate the full schedule would cost it roughly
-an hour, against lumped's 2.6. A like-for-like run with the budget raised is
-being measured; until it lands, **no wall-clock speedup should be claimed**.
+**Per-state probes are state-dependent and settle nothing.** Both engines in the
+same folded structure, wall seconds per simulated second:
 
-The reason the two disagree is instructive. The open-chain probe holds both
-engines in a high-propensity state where the microscopic mode is doing nothing
-but zip. A real trajectory spends most of its time folded, where the microscopic
-propensity collapses — few zips are even available — while lumped mode keeps
-paying to enumerate every competitor of every formed helix on every event. The
-probe measures the regime lumping was designed for; the trajectory measures the
-regime the run is actually in.
+| transcript length | lumped | helix |
+|---|---|---|
+| 127 | 5,791 | 1,939 |
+| 90 | 182 | 631 |
+| 60 | 349 | 366 |
 
-What is not in doubt is the event count, the state-space size, and that lumped
-finishes: ~15× fewer events, 9 lumped states where the microscopic chain has 336,
-and 0 of 8 trajectories truncated against 2,000,000 where the microscopic mode
-needs about 9,000,000. On the probing benchmark it also gives the better
-prediction per trajectory — matching the microscopic row's rank correlation on
-half the sampling, and beating every method on the per-length median.
+The full-length row favours the microscopic mode 3×, contradicting the trajectory
+measurement, and the reason is that the state was manufactured rather than
+reached: folding for 1 s from the open chain at full length lands in a frustrated
+transient whose propensity is 3.3×10⁵, where a real cotranscriptionally-folded
+state sits at 4–7×10⁴. Five to eight times the escape rate, at a similar cost per
+event, is the whole discrepancy. **The cost of this simulator depends more on
+which state it is in than on which mode is running**, which is worth knowing in
+itself, and it means synthetic states cannot be used to compare the two.
+
+What is not in doubt either way: ~15× fewer events, 9 lumped states where the
+microscopic chain has 336, and 0 of 8 trajectories truncated against a 2,000,000
+budget where the microscopic mode needs roughly 9,000,000. On the probing
+benchmark lumped also gives the better prediction per trajectory — matching the
+microscopic row's rank correlation on half the sampling, and beating every method
+on the per-length median.
 
 Where the per-event cost goes, counted by call site over 60 events at full length
 (full `O(n)` energy evaluations per event):
