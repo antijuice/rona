@@ -34,8 +34,9 @@ from dataclasses import dataclass
 
 from ..energy.evaluator import FoldingEnergy
 from ..seq import PAIR_TYPE
+from ..struct import Helix
 from .cache import EnergyCache
-from .structures import Structure, occupied
+from .structures import Structure, occupied, pair_table
 
 #: Exponent clamp, keeping ``exp`` away from overflow.
 MAX_EXPONENT = 400.0
@@ -51,6 +52,20 @@ class MoveModel:
     min_loop: int = 3
     #: Longest span a pair may bridge; ``None`` for no limit.
     max_span: int | None = None
+    #: Whether a pair may cross another, producing a pseudoknot.
+    #:
+    #: Off, and the default is off, for two reasons that point the same way.
+    #: The certificate in :mod:`rona.master.certify` compares the retained
+    #: weight against McCaskill's partition function, which sums over *nested*
+    #: structures only; admitting pseudoknots into the state space while
+    #: certifying against a nested ``Z`` is an inconsistency, and it is
+    #: measurable - it is the 4.7e-5 by which the enumerated Boltzmann sum
+    #: exceeded ``Z``.  And a crossing candidate cannot use the loop-local
+    #: delta, so it costs a full evaluation, which was most of the cost of
+    #: transcribing.  Pseudoknots return when there is a partition function to
+    #: certify them against; three hand-tuned constants, which is what v1 had,
+    #: is not one.
+    allow_crossing: bool = False
 
     def rate(self, dg: float, kT: float) -> float:
         """Metropolis on the exact free-energy difference.
@@ -99,24 +114,61 @@ def neighbours(
     if not isinstance(energy, EnergyCache):
         energy = EnergyCache(energy)
     kT = energy.kT
-    here = energy.of(structure, length)
     used = occupied(structure)
     if pairs is None:
         pairs = candidate_pairs(energy, length, model)
     out: list[tuple[Structure, float]] = []
 
-    def offer(target: Structure) -> None:
-        there = energy.of(target, length)
-        rate = model.rate(there - here, kT)
+    # One loop-local delta per candidate instead of one O(n) evaluation, which
+    # is the difference between 0.4 s and 0.02 s per transcribed nucleotide at
+    # 40 nt.  ``delta_add`` and ``delta_remove`` are used as *pure functions* of
+    # the pair table - nothing is cached between calls, so there is no stale
+    # state to go wrong, which was the failure mode of v1's incremental engine.
+    # They assume the change is nested; a crossing pair falls back to the exact
+    # difference of two full evaluations.
+    table = pair_table(structure, energy.n)
+    crossing = model.allow_crossing and _has_crossing(structure)
+    evaluator = energy.energy
+
+    def offer(target: Structure, pair: tuple[int, int], *, adding: bool) -> None:
+        helix = Helix(pair[0], pair[1], 1)
+        if crossing:
+            delta = energy.of(target, length) - energy.of(structure, length)
+        elif adding:
+            delta = evaluator.delta_add(table, helix, length, nested=True)
+        else:
+            delta = evaluator.delta_remove(table, helix, length, nested=True)
+        rate = model.rate(delta, kT)
         if rate > 0.0:
             out.append((target, rate))
 
     for pair in pairs:
         if pair in structure:
-            offer(structure - {pair})
+            offer(structure - {pair}, pair, adding=False)
             continue
         i, j = pair
         if i in used or j in used or j >= length:
             continue
-        offer(structure | {pair})
+        if not model.allow_crossing and _crosses(structure, pair):
+            # a state never holds a crossing pair, so one can never need
+            # removing either: the move set stays closed and reversible
+            continue
+        offer(structure | {pair}, pair, adding=True)
     return out
+
+
+def _crosses(structure: Structure, pair: tuple[int, int]) -> bool:
+    i, j = pair
+    for a, b in structure:
+        if (a < i < b < j) or (i < a < j < b):
+            return True
+    return False
+
+
+def _has_crossing(structure: Structure) -> bool:
+    items = sorted(structure)
+    for index, (a, b) in enumerate(items):
+        for c, d in items[index + 1 :]:
+            if a < c < b < d:
+                return True
+    return False

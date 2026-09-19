@@ -17,6 +17,7 @@ from .structures import Structure, dotbracket, from_dotbracket, helices_of
 from .moves import MoveModel, neighbours
 from .generator import StateIndex, build_generator
 from .certify import Certificate, certify
+from .cotrans import Frame, Schedule, transcribe
 from .fsp import Solver, Step
 
 __all__ = [
@@ -30,6 +31,9 @@ __all__ = [
     "build_generator",
     "Certificate",
     "certify",
+    "Frame",
+    "Schedule",
+    "transcribe",
     "Solver",
     "Step",
 ]

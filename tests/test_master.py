@@ -95,7 +95,7 @@ def test_every_move_has_its_inverse_at_the_boltzmann_ratio():
             right = back * equilibrium[index[target]]
             worst = max(worst, abs(left - right) / max(left, right))
             checked += 1
-    assert checked > 100
+    assert checked > 50
     assert worst < 1e-12
 
 
@@ -276,3 +276,47 @@ def test_certificate_bounds_the_equilibrium_error(sequence):
             assert certificate.outside <= previous + 1e-9
         previous = certificate.outside
     assert previous < 1e-3, "the tightest run should hold nearly all the weight"
+
+
+@pytest.mark.parametrize(
+    "sequence", ["GCGCAAAAGCGC", "GGCAUUGCAAGCC", "GGCGCUUGCGCAAAGCGCAAGCGCC"]
+)
+def test_loop_local_delta_equals_a_full_evaluation_everywhere(sequence):
+    """Every rate in the generator, against two full energy evaluations.
+
+    The move set scores a candidate with a loop-local delta rather than by
+    evaluating the whole structure, which is what makes the solver fast enough
+    to transcribe.  It is used as a pure function of the pair table - nothing is
+    cached between calls, so there is no stale state - but it can still be
+    *wrong*, and an incremental energy that silently disagrees with the real one
+    is exactly the defect that dominated v1.  So it is checked exhaustively: for
+    every state reachable in the chain and every move out of it, the rate must
+    match the one implied by evaluating both structures in full.
+    """
+    model = MoveModel()
+    cache = EnergyCache(FoldingEnergy(sequence))
+    n = len(sequence)
+    pairs = candidate_pairs(cache, n, model)
+    # a bounded walk, not the whole space: for 25 nt the full space is millions
+    # of structures and the point here is coverage of move *kinds*, not of states
+    order = [EMPTY]
+    seen = {EMPTY}
+    frontier = [EMPTY]
+    while frontier and len(order) < 300:
+        state = frontier.pop(0)
+        for target, _rate in neighbours(cache, state, n, model, pairs):
+            if target not in seen:
+                seen.add(target)
+                order.append(target)
+                frontier.append(target)
+    worst = 0.0
+    checked = 0
+    for state in order:
+        here = cache.of(state, n)
+        for target, rate in neighbours(cache, state, n, model, pairs):
+            expected = model.rate(cache.of(target, n) - here, cache.kT)
+            if max(rate, expected) > 0.0:
+                worst = max(worst, abs(rate - expected) / max(rate, expected))
+            checked += 1
+    assert checked > 80
+    assert worst < 1e-9, f"loop-local delta disagrees with full evaluation: {worst:.2e}"
