@@ -105,22 +105,28 @@ class Solver:
             self.position[state] = found
         return found
 
-    def _assemble(self) -> tuple[csr_matrix, dict[Structure, float]]:
+    def _assemble(self) -> tuple[csr_matrix, list[tuple[Structure, int, float]]]:
+        """The truncated generator, and the escapes, *unweighted*.
+
+        The escapes are returned per source column rather than summed, because
+        which of them matters depends on where the probability ends up during
+        the step - not on where it started.  Weighting them by the initial
+        vector, which an earlier version did, gives every newly admitted state a
+        weight of zero, so its own escapes look harmless and the expansion
+        stalls after a single round with most of the mass already gone.
+        """
         size = len(self.states)
         rows: list[int] = []
         cols: list[int] = []
         data: list[float] = []
         diagonal = np.zeros(size)
-        frontier: dict[Structure, float] = {}
-        weight = self._padded()
+        escapes: list[tuple[Structure, int, float]] = []
         for column, state in enumerate(self.states):
             for target, rate in self._moves(state):
                 diagonal[column] -= rate
                 row = self.position.get(target)
                 if row is None:
-                    # flux into a state we do not hold: rank the frontier by the
-                    # probability actually arriving, not by the bare rate
-                    frontier[target] = frontier.get(target, 0.0) + rate * weight[column]
+                    escapes.append((target, column, rate))
                     continue
                 rows.append(row)
                 cols.append(column)
@@ -128,7 +134,7 @@ class Solver:
         rows.extend(range(size))
         cols.extend(range(size))
         data.extend(diagonal.tolist())
-        return csr_matrix((data, (rows, cols)), shape=(size, size)), frontier
+        return csr_matrix((data, (rows, cols)), shape=(size, size)), escapes
 
     def _padded(self) -> np.ndarray:
         vector = np.zeros(len(self.states))
@@ -140,7 +146,7 @@ class Solver:
         """Advance by ``dt``, expanding the retained set until the leak fits."""
         expansions = 0
         while True:
-            matrix, frontier = self._assemble()
+            matrix, escapes = self._assemble()
             vector = self._padded()
             evolved, self.integration_error = integrate(
                 matrix, vector, dt, tolerance=self.integration_tolerance
@@ -150,17 +156,34 @@ class Solver:
                 escaped <= self.tolerance
                 or expansions >= max_expansions
                 or len(self.states) >= self.max_states
-                or not frontier
+                or not escapes
             ):
                 break
+            # weight each escape by the probability sitting on its source at the
+            # *end* of the step, which is where the mass actually is
+            frontier: dict[Structure, float] = {}
+            for target, column, rate in escapes:
+                share = rate * max(evolved[column], vector[column])
+                frontier[target] = frontier.get(target, 0.0) + share
+            # Admit states in order of the probability actually arriving at
+            # them, and stop once the flux left outside would not breach the
+            # budget.  Admitting a fixed number instead - which an earlier
+            # version did - pulls in thousands of structures that carry nothing:
+            # on an 18 nt sequence, 99.99% of the equilibrium mass sits in 20 of
+            # 80,232 states, so the retained set should look like the support of
+            # the distribution, not like a breadth-first ball around it.
             ranked = sorted(frontier.items(), key=lambda kv: -kv[1])
+            tail = sum(flux for _state, flux in ranked) * dt
             added = 0
-            for state, _flux in ranked:
+            for state, flux in ranked:
+                if tail <= self.tolerance * 0.5:
+                    break
                 if added >= per_round or len(self.states) >= self.max_states:
                     break
                 if state not in self.position:
                     self._add(state)
                     added += 1
+                tail -= flux * dt
             if added == 0:
                 break
             expansions += 1

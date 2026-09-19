@@ -173,3 +173,71 @@ Stated in advance, so it is not rationalised later:
 
 Each of these is measurable early, and each is a reason to stop rather than to
 keep building.
+
+---
+
+## Measured, milestone 1
+
+What is built and verified (`rona.master`, `tests/test_master.py`):
+
+| property | checked against | result |
+|---|---|---|
+| reversibility | Boltzmann ratio on every edge | 0 one-way of 52,976; worst violation 2e-14 |
+| long-time limit | Boltzmann distribution from the energy model | L1 = 3e-11 |
+| time integration | scipy's exact matrix exponential | matches; error *estimate* accurate to ~7% |
+| positivity, mass | - | non-negative, mass 1.000000000 |
+| FSP certificate | error measured on the fully enumerated space | never violated, and exactly tight |
+
+Three defects were found by those checks rather than by reasoning, and each is
+worth keeping in view:
+
+1. **Helix-level moves are not self-inverse.** Nucleating a block beside an
+   existing helix yields one longer helix whose whole-melt is never offered.
+   119 of 1155 edges were one-way on a 25 nt sequence; the chain was
+   irreversible and drifted *away* from Boltzmann the longer it ran. Moves are
+   now single base pairs, where add and remove are inverses by construction.
+   This is the same defect class as v1's stranded helices, and the lesson is
+   the same: a move set defined on helices has to have its reversibility
+   proved case by case, and will not survive it.
+2. **Stiffness moves into the linear algebra.** It does not go away by
+   abandoning sampling. `expm_multiply` does not finish at `||A|| t ~ 10^7`;
+   explicit Krylov overflows. Backward Euler works because it is L-stable and
+   `(I - dt A)` is an M-matrix, so probabilities stay non-negative.
+3. **Truncation error and integration error are different things.** Conflating
+   them reported a bound of 3e-11 on an answer that was 7e-2 wrong. The
+   certificate covers truncation only.
+
+### The result that matters
+
+The full state space is exponential, as expected:
+
+| length | structures |
+|---|---|
+| 12 nt | 49 |
+| 18 nt | 80,232 |
+
+The mass-carrying support is not:
+
+| | full space | 99.99% of mass | 99.9999% |
+|---|---|---|---|
+| 12 nt | 49 | 9 | 18 |
+| 18 nt | 80,232 | 20 | 84 |
+
+The space grew 1,637x; the support grew 4.7x. **84 structures out of 80,232
+carry all but one part in a million of the equilibrium distribution.** This is
+the regime FSP exists for, and it is the central premise of v2 holding up.
+
+### The obstacle, and where its answer lives
+
+Loss-only FSP is too conservative for this system. With rates of 10^7 s^-1, a
+2 ms step lets probability make ~10^4 hops, and the method counts *every*
+excursion out of the retained set as permanent loss - including a brief visit to
+a high-energy structure that would return immediately. The bound stays valid and
+becomes useless: 1.0 at any step long enough to be interesting.
+
+This is a known property, and the literature's answer is a **reflecting
+boundary**: return escaped mass to the boundary rather than discarding it, and
+bound the error by the probability resident on the boundary instead. Cao, Terebus
+& Liang (*Bull Math Biol* 2016) prove the bound for that construction and show
+it is asymptotically tight. That is milestone 2, and it is a change to the
+boundary condition, not to anything already verified above.
