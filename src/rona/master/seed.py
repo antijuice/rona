@@ -50,12 +50,27 @@ def suboptimal(
 
 
 def seed(solver, *, window: float = 4.0, limit: int = 2000) -> int:
-    """Admit the low-energy structures of the current prefix; return how many."""
+    """Admit the low-energy structures of the current prefix; return how many.
+
+    A region solver is seeded with the *projection* of each structure onto its
+    own nucleotides.  That needs no constrained enumeration: a nested structure's
+    pairs that lie wholly inside one region are mutually nested and cannot cross
+    an anchor, so the projection is always a legal region state, and a pair
+    running from inside the region to outside it is dropped because no single
+    region could hold it anyway.  Seeding is not the model - a projection that
+    carries no weight is pruned like anything else - so it is enough that every
+    seed be legal and cheap to obtain.
+    """
     sequence = solver.energy.energy.seq[: solver.length]
     if not sequence:
         return 0
     added = 0
     for structure in suboptimal(sequence, window=window, limit=limit):
+        if solver.within is not None:
+            structure = frozenset(
+                pair for pair in structure
+                if pair[0] in solver.within and pair[1] in solver.within
+            )
         if structure not in solver.position:
             solver._add(structure)
             added += 1

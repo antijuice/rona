@@ -62,7 +62,7 @@ class Solver:
         integration_tolerance: float = 1e-8,
         boundary: str = "reflecting",
         base: Structure = EMPTY,
-        allowed=None,
+        within=None,
     ) -> None:
         self.energy = energy if isinstance(energy, EnergyCache) else EnergyCache(energy)
         self.model = model or MoveModel()
@@ -96,15 +96,19 @@ class Solver:
         #: Latest boundary indicator (reflecting) or escaped mass (absorbing).
         self.leak = 0.0
         #: Pairs held fixed: present in every state, never offered for removal.
-        #: With ``allowed`` restricted to one region's pairs this makes the
+        #: With ``within`` restricted to one region's nucleotides this makes the
         #: solver a *region* solver, and by the additivity theorem in
         #: :mod:`rona.master.factor` its dynamics are then exactly the
         #: restriction of the flat solver's - same rates from the same code.
         self.base = base
-        #: The only pairs this solver may form; ``None`` for all of them.
-        self.allowed = None if allowed is None else frozenset(allowed)
-        if self.allowed is not None and self.allowed & self.base:
-            raise ValueError("a base pair must not also be an allowed move")
+        #: The only nucleotides this solver may pair; ``None`` for all of them.
+        #:
+        #: Positions rather than pairs, because a region *grows*: transcription
+        #: adds nucleotides to whichever region is outermost, and a fixed pair
+        #: list would silently stop offering the new pairings.
+        self.within = None if within is None else set(within)
+        if self.within is not None and self.within & {k for p in base for k in p}:
+            raise ValueError("a base pair's nucleotides are not free to pair")
         self.history: list[Step] = []
         self._neighbours: dict[tuple[Structure, int], list[tuple[Structure, float]]] = {}
         self._pair_cache: dict[int, list[tuple[int, int]]] = {}
@@ -118,15 +122,15 @@ class Solver:
     def forbidden(self) -> list[int]:
         """Nucleotides this solver may never pair, for the constrained ``Z``.
 
-        Everything the allowed set cannot reach and the base does not already
+        Everything outside ``within`` that the base does not already
         use.  For the flat solver that is nothing; for a region solver it is
         every nucleotide belonging to another region.
         """
-        if self.allowed is None:
+        if self.within is None:
             return []
-        reachable = {k for pair in self.allowed for k in pair}
         used = {k for pair in self.base for k in pair}
-        return [k for k in range(self.length) if k not in reachable and k not in used]
+        return [k for k in range(self.length)
+                if k not in self.within and k not in used]
 
     def _moves(self, state: Structure) -> list[tuple[Structure, float]]:
         key = (state, self.length)
@@ -146,8 +150,9 @@ class Solver:
         found = self._pair_cache.get(self.length)
         if found is None:
             found = candidate_pairs(self.energy, self.length, self.model)
-            if self.allowed is not None:
-                found = [pair for pair in found if pair in self.allowed]
+            if self.within is not None:
+                found = [pair for pair in found
+                         if pair[0] in self.within and pair[1] in self.within]
             self._pair_cache[self.length] = found
         return found
 

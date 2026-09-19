@@ -229,7 +229,7 @@ def test_region_solvers_reproduce_the_block_evolution():
         pairs = region_candidates(cache, anchors, region, n, model)
         solver = Solver(
             cache, model, length=n, tolerance=1e-12, prune_below=0.0,
-            integration_tolerance=1e-12, base=anchors, allowed=pairs,
+            integration_tolerance=1e-12, base=anchors, within=region.positions,
         )
         solver.advance(dt, max_expansions=64, per_round=4096)
         solvers.append(solver)
@@ -271,7 +271,7 @@ def test_a_regions_certificate_is_zero_when_it_holds_everything():
     n = len(SEQ)
     anchors = frozenset(ANCHORS_TWO)
     # a region with no free nucleotides at all: one state, nothing outside it
-    solver = Solver(cache, model, length=n, base=anchors, allowed=[])
+    solver = Solver(cache, model, length=n, base=anchors, within=())
     assert len(solver.states) == 1
     assert solver.certified_outside() == 0.0
 
@@ -282,7 +282,7 @@ def test_a_regions_certificate_is_zero_when_it_holds_everything():
         key=lambda r: len(r.positions),
     )
     pairs = region_candidates(cache, anchors, inner, n, model)
-    full = Solver(cache, model, length=n, base=anchors, allowed=pairs,
+    full = Solver(cache, model, length=n, base=anchors, within=inner.positions,
                   tolerance=0.0, prune_below=0.0)
     for state in enumerate_block(pairs, frozenset()):
         full._add(state)
