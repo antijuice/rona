@@ -16,6 +16,7 @@ bound.  See ``docs/v2-design.md``.
 from .structures import Structure, dotbracket, from_dotbracket, helices_of
 from .moves import MoveModel, neighbours
 from .generator import StateIndex, build_generator
+from .certify import Certificate, certify
 from .fsp import Solver, Step
 
 __all__ = [
@@ -27,6 +28,8 @@ __all__ = [
     "neighbours",
     "StateIndex",
     "build_generator",
+    "Certificate",
+    "certify",
     "Solver",
     "Step",
 ]

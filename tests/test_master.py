@@ -181,3 +181,98 @@ def test_pruned_mass_is_added_to_the_certificate():
         solver.advance(1e-5)
     assert solver.bound >= sum(step.pruned for step in solver.history)
     assert solver.retained_mass <= 1.0 + 1e-12
+
+
+def _enumerate(sequence, model=None):
+    model = model or MoveModel()
+    cache = EnergyCache(FoldingEnergy(sequence))
+    n = len(sequence)
+    pairs = candidate_pairs(cache, n, model)
+    seen = {EMPTY}
+    stack = [EMPTY]
+    while stack:
+        state = stack.pop()
+        for target, _rate in neighbours(cache, state, n, model, pairs):
+            if target not in seen:
+                seen.add(target)
+                stack.append(target)
+    return cache, model, sorted(seen, key=sorted)
+
+
+def test_reflecting_boundary_conserves_mass_where_absorbing_collapses():
+    """The reason the default boundary is the reflecting one.
+
+    Absorbing FSP charges for every excursion out of the retained set, including
+    reversible ones that return microseconds later.  At 10^7 s^-1 that bound
+    reaches 1.0 - valid, and saying nothing - before anything interesting has
+    happened.
+    """
+    cache, model, _order = _enumerate(SMALL)
+    horizon = 1e-3
+    results = {}
+    for boundary in ("absorbing", "reflecting"):
+        solver = Solver(
+            cache, model, tolerance=1e-3, prune_below=1e-12,
+            max_states=20_000, boundary=boundary,
+        )
+        for _ in range(4):
+            solver.advance(horizon / 4, per_round=512)
+        results[boundary] = solver
+
+    assert results["absorbing"].retained_mass < 0.5, (
+        "the absorbing bound is expected to degenerate here; if it does not, "
+        "the reflecting boundary has stopped being necessary"
+    )
+    assert results["reflecting"].retained_mass == pytest.approx(1.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("sequence", ["GGCAUUGCAAGCAAU"])
+def test_certificate_bounds_the_equilibrium_error(sequence):
+    """The certificate, against the equilibrium error measured exactly.
+
+    ``1 - Z_S/Z`` is computable without enumerating anything, because this
+    domain has an exact partition function.  Here it is checked against the
+    error measured on the fully enumerated space, and against ``Z`` recomputed
+    by summing the enumerated Boltzmann weights - which also measures how far
+    this package's energy model sits from the one supplying ``Z``.
+    """
+    pytest.importorskip("RNA")
+    from rona.master.certify import certify, partition_function_energy
+
+    cache, model, order = _enumerate(sequence)
+    n = len(sequence)
+    ensemble = partition_function_energy(sequence)
+    summed = sum(math.exp(-(cache.of(s, n) - ensemble) / cache.kT) for s in order)
+    # our energy model against ViennaRNA's partition function
+    assert summed == pytest.approx(1.0, abs=5e-4)
+
+    energies = np.array([cache.of(s, n) for s in order])
+    weights = np.exp(-(energies - energies.min()) / cache.kT)
+    equilibrium = weights / weights.sum()
+    position = {state: i for i, state in enumerate(order)}
+
+    previous = None
+    for tolerance in (1e-2, 1e-3, 1e-4):
+        solver = Solver(
+            cache, model, tolerance=tolerance, prune_below=1e-12,
+            max_states=20_000, integration_tolerance=1e-9,
+        )
+        for _ in range(4):
+            solver.advance(0.1 / 4, per_round=2000, max_expansions=30)
+        certificate = certify(solver)
+
+        # the retained equilibrium, against the true one
+        retained = np.zeros(len(order))
+        for state in solver.states:
+            retained[position[state]] = equilibrium[position[state]]
+        retained = retained / retained.sum()
+        measured = float(np.abs(retained - equilibrium).sum())
+        assert measured <= certificate.l1 + 1e-3, (
+            f"tol={tolerance}: equilibrium error {measured:.3e} exceeds "
+            f"certificate {certificate.l1:.3e}"
+        )
+        # tightening the tolerance must not lose weight
+        if previous is not None:
+            assert certificate.outside <= previous + 1e-9
+        previous = certificate.outside
+    assert previous < 1e-3, "the tightest run should hold nearly all the weight"

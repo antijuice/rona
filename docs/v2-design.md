@@ -241,3 +241,58 @@ bound the error by the probability resident on the boundary instead. Cao, Terebu
 & Liang (*Bull Math Biol* 2016) prove the bound for that construction and show
 it is asymptotically tight. That is milestone 2, and it is a change to the
 boundary condition, not to anything already verified above.
+
+---
+
+## Measured, milestone 2
+
+### The boundary condition decides whether the method works
+
+Both boundaries on a 15 nt sequence with 4,344 reachable structures, against the
+exact solution on the full space:
+
+| boundary | tolerance | states | mass retained | true L1 at t = 0.1 s |
+|---|---|---|---|---|
+| absorbing | 1e-2 | 27 | 0.000 | 1.000 |
+| absorbing | 1e-4 | 27 | 0.000 | 1.000 |
+| reflecting | 1e-2 | 20 | 1.000000 | 7.1e-3 |
+| reflecting | 1e-3 | 49 | 1.000000 | 4.6e-4 |
+| reflecting | 1e-4 | **81** | 1.000000 | **7.8e-5** |
+
+The absorbing bound degenerates to 1.0 beyond a few microseconds, exactly as the
+gross-flux argument predicts. The reflecting chain gives 1e-4 accuracy from 81
+of 4,344 structures - 1.9% of the space - and the answer does not drift between
+1 ms and 0.1 s, because the retained chain is a proper process rather than a
+leaking one.
+
+### The certificate, made rigorous by something only this domain has
+
+The reflecting chain's equilibrium is the Boltzmann distribution conditioned on
+the retained set, so
+
+```
+|| pi|_S - pi ||_1  =  2 (1 - Z_S / Z)
+```
+
+`Z_S` is a sum over states held. `Z` is the partition function over *every*
+secondary structure, and McCaskill's algorithm computes it exactly in `O(n^3)`
+without enumerating anything. The generic chemical-master-equation setting has
+no such thing; RNA does, and it converts the boundary indicator into a real
+number:
+
+| tolerance | states | equilibrium weight outside | measured L1 |
+|---|---|---|---|
+| 1e-2 | 20 | 3.49e-3 | 7.1e-3 |
+| 1e-3 | 49 | 1.82e-4 | 4.6e-4 |
+| 1e-4 | 81 | < 1e-12 | 7.8e-5 |
+
+Summing the enumerated Boltzmann weights against McCaskill's `Z` gives 1.000047,
+so this package's energy model and the one supplying `Z` agree to 5e-5 - the
+certificate rests on that agreement and is no better than it.
+
+Two limits, stated rather than buried. It certifies the **equilibrium**
+component; a transient distribution can be wrong in ways it does not see, which
+is why the dynamic indicator is reported alongside it. At t = 0.1 s the measured
+L1 of 7.1e-3 slightly exceeds the equilibrium bound of 6.98e-3, and the
+difference is the transient that has not yet decayed plus the model disagreement
+above - which is the bound behaving correctly, not failing.
