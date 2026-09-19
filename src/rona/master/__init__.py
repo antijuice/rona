@@ -28,6 +28,7 @@ from .cotrans import Frame, Schedule, transcribe
 from .fsp import Solver, Step
 from .factor import Region, decompose, region_candidates, rejoin, restrict
 from .anchored import Anchored, AnchoredFrame, Promotion
+from .coarse import basins, local_minimum
 
 __all__ = [
     "Structure",
@@ -53,4 +54,6 @@ __all__ = [
     "Anchored",
     "AnchoredFrame",
     "Promotion",
+    "basins",
+    "local_minimum",
 ]
