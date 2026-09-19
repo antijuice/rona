@@ -222,3 +222,82 @@ pip install drtransformer
 printf '>crcb\n%s\n' "$SEQ" | DrTransformer --name crcb --outdir drt --t-ext 0.0333
 python examples/06_shape_benchmark.py --drf drt/crcb.drf
 ```
+
+---
+
+## 4. v2 against DrTransformer — *measured, and refereed by a third party*
+
+The certificate says the solver answers its own model correctly. It says nothing
+about whether the model predicts RNA folding, and the only way to find that out
+is to compare against something built differently. DrTransformer 1.0 is built
+very differently: it coarse-grains each length's landscape to local minima and
+constructs maps between consecutive landscapes.
+
+Two things have to be got right before the comparison means anything, and getting
+either wrong produces a nonsense answer that looks like a real disagreement.
+
+**Align by transcript length, not by time.** v2's clock starts when folding
+starts (`Schedule.start`, 10 nt here); DrTransformer has been transcribing since
+nucleotide 1. Matching on time compares a 73 nt molecule against an 82 nt one and
+reports an L1 of 2.0 — which is what the first attempt did.
+
+**Compare basins against basins.** DrTransformer reports occupancies of
+coarse-grained macrostates; v2 computes a distribution over individual
+structures. So v2's ensemble is coarse-grained by the same rule — steepest descent
+in the single-base-pair move set, `rona.master.coarse` — and DrTransformer's
+reported structures are put through the same map. Also run DrTransformer with
+`--o-prune 0`, because its default silently drops anything below 1% occupancy.
+
+82 nt, three hairpin domains, 30 nt/s, v2 at tolerance 1e-3:
+
+| length | basins (v2) | basins (DrT) | L1 |
+|---|---|---|---|
+| 30 nt | 14 | 2 | 0.043 |
+| 40 nt | 20 | 2 | 0.022 |
+| 50 nt | 5 | 2 | 0.014 |
+| 60 nt | 67 | 2 | **0.782** |
+| 70 nt | 12 | 1 | 0.014 |
+| 82 nt | 54 | 2 | 0.156 |
+
+At the end of transcription the two agree closely on a genuinely split ensemble:
+
+| structure | v2 | DrTransformer |
+|---|---|---|
+| `…(((...)))` | 0.544 | 0.574 |
+| `…((....)).` | 0.378 | 0.426 |
+| `…..........` | 0.056 | — |
+
+### The 60 nt disagreement, settled by neither of them
+
+v2 puts 0.21 and 0.17 on two partially-formed third-domain hairpins that
+DrTransformer does not report at all, giving 0.9999 to the unstructured tail. One
+of them is wrong, and the question is answerable without either: at 60 nt the
+molecule has had 1.7 s, which is long next to helix formation, so the exact
+equilibrium ensemble of the 60 nt prefix is a fair referee. ViennaRNA, asked
+directly:
+
+| structure | exact Boltzmann share | v2 | DrTransformer |
+|---|---|---|---|
+| `…….((...)).....` | 0.202 | 0.210 | 0.000 |
+| `……….(((....)))` | 0.146 | 0.165 | 0.000 |
+| `…................` | 0.536 | 0.609 | 0.9999 |
+
+and the pair at 49-55 carries probability 0.210 in ViennaRNA's own base-pair
+probability matrix. So v2 is right here to within 0.07 and DrTransformer is
+under-reporting real conformational heterogeneity by a factor of nearly two on
+the dominant state. The 0.782 is not a v2 error; it is v2 resolving structure a
+coarse-grained method has lumped away.
+
+That is the result worth having from this exercise, and it is not "we match the
+reference". It is that where the two disagree, the disagreement is checkable, and
+this time it checked out in this solver's favour.
+
+### What this does not establish
+
+One sequence, and a designed one — three well-separated hairpins with A-rich
+spacers, which is the easy case for everybody. It says the machinery is sound and
+the numbers are real. It does not say anything yet about a riboswitch, a
+pseudoknot, or the user's AU-rich 316 nt sequence, where the anchored
+representation buys nothing and the flat solver is slow. Those are the next
+comparisons, and the honest position until they are done is that v2 is validated
+on an easy case against one independent method and one exact calculation.
