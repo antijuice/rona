@@ -1,0 +1,175 @@
+# v2: a certified cotranscriptional kinetic ensemble
+
+## Why v1 is being replaced
+
+v1 is a Gillespie SSA over secondary structures with helix-level moves,
+cotranscription as a growing chain, and detailed balance against a Turner 2004
+energy model. That is the same mathematical object Kinefold has been since
+Isambert & Siggia (2000), with a weaker pseudoknot model, no knot topology, no
+exactly-clustered stochastic simulation, and worse performance. The "lumped"
+mode added late in v1 - eliminating the base-pair zipping degree of freedom -
+independently rediscovered Kinefold's founding assumption, that stacking and
+unstacking are quasi-equilibrated relative to the transitions between visited
+secondary structures.
+
+The failure is not implementation quality. Parts of v1 are good: the energy
+model reproduces ViennaRNA to 0.009 kcal/mol, detailed balance is verified
+transition by transition, and the SHAPE benchmark is honest. The failure is
+architectural, and it is this:
+
+**Trajectory sampling is the wrong algorithm for this question.**
+
+The question is "what is the distribution over structures at each time during
+transcription". An SSA answers it by simulating individual histories and
+averaging. Its cost scales with the number of *events*, and the event count is
+set by the fastest mode in the system - base-pair zipping at ~10^6 s^-1 - while
+the answer lives on the transcription timescale of seconds. So one pays ~10^6
+events per second of simulated time to learn about a process that changes on a
+1-second timescale, and 99.7% of those events change nothing about the answer.
+Running more trajectories reduces variance; it does not touch this. No amount of
+engineering fixes a mismatch between what the algorithm costs and what the
+question needs.
+
+## What the field does instead
+
+Every cotranscriptional tool built since Kinfold has moved away from sampling
+elementary events, towards *deterministic integration of the master equation on
+a coarse-grained state space*:
+
+| tool | state space | integration |
+|---|---|---|
+| BarMap | barrier tree per transcription step, mapped between steps | Treekin |
+| DrTransformer | representative local minima, found per step | numeric, then prune |
+| StraD | constrained local flooding | flooding-based |
+| landscape-zooming (Xu & Chen) | partitions by long stable helices | inter-partition network |
+
+Cost per unit of *simulated time* is essentially zero for all of them; the whole
+cost is in choosing which states to keep. That is the right trade for this
+question.
+
+## The gap, and what v2 is
+
+All of them prune heuristically. DrTransformer removes part of the ensemble
+after each simulation and repopulates from the remainder; none of these tools
+reports how much probability mass it discarded, or what that discarding does to
+the answer. The output is a distribution with no error bar.
+
+Meanwhile the numerical-analysis literature has solved exactly this problem for
+the chemical master equation, and has for twenty years:
+
+* **Finite State Projection** (Munsky & Khammash 2006) truncates the state space
+  and returns *a certificate*: the probability mass that has left the retained
+  set is a rigorous upper bound on the L1 error of the retained distribution.
+* **Adaptive FSP with quantile pruning** (Dendukuri et al. 2025) proves the
+  truncation error is bounded by the pruned mass at each step, is user-controlled
+  and **does not propagate forward in time**.
+* **Krylov-FSP** (Burrage et al. 2006; Kormann & Loehner 2016) approximates the
+  matrix exponential on the truncated generator, giving intermediate times for
+  free and error estimates compatible with the Krylov approximation.
+
+This is standard practice in systems biology and appears to be absent from the
+RNA folding literature entirely.
+
+**v2 is cotranscriptional folding posed as a time-inhomogeneous CME over
+secondary structures, solved by adaptive Finite State Projection, reporting a
+certified bound on the error of every distribution it outputs.**
+
+The deliverable is not "a prediction". It is "a prediction, and a number that
+says how wrong it can be". Nothing in the field currently offers that, and it is
+what makes the ensemble honest rather than merely plausible.
+
+## The construction
+
+**State.** A secondary structure, represented as a set of helices. The retained
+set `S(t)` is explicit and finite.
+
+**Generator.** `A` is the sparse rate matrix over `S(t)`, built from the move set
+and the energy model, with `k(x->y)/k(y->x) = exp(-(G_y - G_x)/RT)` exactly. This
+part carries over from v1, which verifies it transition by transition.
+
+**Propagation.** `p(t + dt) = exp(A dt) p(t)` by Krylov (Arnoldi) on the sparse
+`A` - never forming the matrix exponential, never sampling. Stiffness is handled
+by the exponential integrator rather than avoided: a 10^6 s^-1 mode costs
+nothing here, because it is integrated rather than enumerated.
+
+**Truncation and its certificate.** `A` is defective by construction: rows for
+states whose neighbours are outside `S` do not conserve probability. That leak
+is the error bound. Each step:
+1. propagate on `S`;
+2. measure the escaped mass `eps_step`;
+3. expand `S` along the leaking edges and re-propagate until `eps_step < tol`;
+4. prune the smallest-probability states by quantile, adding the pruned mass to
+   the certificate.
+The reported bound is the accumulated `sum(eps)` - a real number attached to
+every output distribution.
+
+**Transcription.** Each elongation is a new, larger state space and a new
+generator. Mapping `p` from step `n` to step `n+1` is *exact*, not a heuristic:
+appending a nucleotide is an injective map on structures, so probability is
+carried across unchanged. This is where BarMap needs its landscape maps and
+where v2 needs nothing.
+
+## Physics to fix at the same time
+
+These are independent of the numerics and each is a known defect of v1.
+
+1. **Branch migration as an elementary move.** R2D2 (Yu et al. 2021, *Mol Cell*)
+   showed E. coli SRP RNA rearranges by internal toehold-mediated strand
+   displacement; ANNaMo (Guerra et al. 2024) reproduces displacement rate vs
+   toehold length from a coarse-grained model. v1 had no such move, so a helix
+   could only be replaced by melting it first - which is why v1 needed a
+   minimum-bottleneck saddle search to get trap escape approximately right.
+   With branch migration in the move set the barrier is the mechanism, not a
+   correction to it.
+2. **Pseudoknot energetics from polymer theory.** v1 uses three hand-tuned
+   constants. Kinefold uses stiff rods for helices and polymer springs for single
+   strands with an explicit confinement factor; Vfold2D-MC derives loop entropies
+   by virtual-bond Monte Carlo. Either is a model; neither is three numbers
+   chosen to make examples work.
+3. **Loop entropy for large loops.** Same source, same reason.
+
+## What carries over from v1
+
+Kept, because it is verified and rebuilding it would be waste, not virtue:
+
+* `rona.energy` - Turner 2004, 0.009 kcal/mol against ViennaRNA across 4-90 C
+  and both dangle models, with the pair-type padding and truncation subtleties
+  already found and fixed;
+* `rona.struct` - structure representation, dot-bracket I/O, helix extraction;
+* `rona.validation` - RDAT reader and the SHAPE benchmark harness;
+* `rona.render` - the rendering and the player.
+
+Discarded: `rona.kinetics`, `rona.lumped`, `rona.cotrans` - the SSA engine and
+everything built on it. That is the part that was a worse Kinefold.
+
+## How it gets validated
+
+The certificate is the first thing to test, and it is testable *exactly*:
+
+1. On systems small enough to enumerate completely, solve the full master
+   equation and the FSP-truncated one. The true L1 error must be at or below the
+   reported bound, always. A certificate that is ever violated is a bug, and this
+   is a hard pass/fail, not a correlation.
+2. The bound must be tight enough to be useful, not merely valid - measure the
+   ratio of true error to reported bound.
+3. Against the field's benchmarks: E. coli SRP RNA (R2D2, landscape-zooming,
+   Badelt's guide and Sun & Chen all use it) and the pbuE riboswitch with and
+   without ligand, where kinetics and equilibrium are known to give different
+   answers. The crcB TECprobe data from v1 stays as a regression check.
+4. Against DrTransformer on the same inputs, which is the tool this most
+   directly competes with.
+
+## What would make this fail
+
+Stated in advance, so it is not rationalised later:
+
+* If the retained set needed to hold `eps` below a useful tolerance grows
+  exponentially with length for real sequences, the method is exact and useless.
+  This is the central empirical risk and the first thing milestone 2 measures.
+* If FSP's bound is technically valid but astronomically loose, the certificate
+  is decoration.
+* If branch migration explodes the move set's branching factor, the generator
+  becomes too dense to propagate.
+
+Each of these is measurable early, and each is a reason to stop rather than to
+keep building.

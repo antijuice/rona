@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
-dependencies = ["numpy>=1.23"]
+dependencies = ["numpy>=1.23", "scipy>=1.10"]
 
 [project.optional-dependencies]
 movie = ["matplotlib>=3.6", "imageio>=2.25", "imageio-ffmpeg>=0.4"]
