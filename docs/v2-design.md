@@ -296,3 +296,64 @@ is why the dynamic indicator is reported alongside it. At t = 0.1 s the measured
 L1 of 7.1e-3 slightly exceeds the equilibrium bound of 6.98e-3, and the
 difference is the transient that has not yet decayed plus the model disagreement
 above - which is the bound behaving correctly, not failing.
+
+---
+
+## Measured, milestone 3
+
+Transcription works, and the certificate is enforced rather than reported. Whole
+sequence, 5' to 3' at 30 nt/s, on one core:
+
+| length | tolerance | states retained | wall | certified weight outside |
+|---|---|---|---|---|
+| 20 nt | 1e-3 | 68 | 0.6 s | 3.9e-5 |
+| 30 nt | 1e-3 | 101 | 0.9 s | 2.3e-4 |
+| 35 nt | 1e-3 | 238 | 1.9 s | 7.9e-4 |
+| 45 nt | 1e-3 | 1,224 | 43 s | 7.8e-4 |
+| 50 nt | 1e-3 | 1,386 | 79 s | 1.4e-3 |
+| 50 nt | 1e-2 | 323 | 9.5 s | 7.2e-3 |
+
+Three things had to change to get there, and each was found by the certificate
+disagreeing with the solver's own opinion of itself.
+
+**The stopping rule was measuring the wrong thing.** Expansion stopped on the
+weight one move outside the retained set, which under-reports systematically: on
+a 40 nt transcript it declared convergence at 1e-3 while 7e-2 of the equilibrium
+weight was missing. It now stops on the certificate itself - the retained weight
+against an exact `Z` - which costs one `O(n^3)` McCaskill per length.
+
+**The retained set ratcheted.** Pruning on probability alone never releases a
+structure that mattered at length 15 and is irrelevant by length 40. Dropping a
+state now requires that it carry neither probability now nor equilibrium weight
+to come; that took a 20 nt transcript from 454 states to 62.
+
+**A greedy walk cannot cross a ridge.** Expansion admits neighbours of what is
+held, so a basin behind a run of individually-insignificant structures is
+unreachable - which is what the stuck 7e-2 at 40 nt was. The retained set is now
+seeded at each length with the structures `RNAsubopt` lists within 4 kcal/mol of
+the minimum. That is a *seed*, not the model: a seeded structure carrying no
+weight is pruned like any other, and the answer is still certified. It took
+40 nt from 1,292 states and a missed tolerance to 413 states in 3.1 s.
+
+### Where this stops
+
+Usable to roughly 50 nt at 1e-3, 50-60 at 1e-2. DrTransformer handles 200+.
+
+The limit is not the fast modes - those cost nothing here - but that the
+retained set must cover a *product*. An RNA with two independent folded domains
+needs the product of their ensembles: 100 states each becomes 10,000 jointly,
+for no gain in what is actually being predicted, since the domains are
+independent. The state counts above show it: the jump from 238 states at 35 nt
+to 1,224 at 45 nt is the third domain appearing.
+
+That is the curse of dimensionality returning in its proper form, and it is a
+representation problem rather than a sampling one. The literature's answer is a
+factorised representation - tensor-train solutions of the chemical master
+equation (Dolgov & Khoromskij; Gelss et al.) treat exactly this product
+structure, and for RNA specifically the landscape-zooming approach of Xu & Chen
+partitions by long stable helices, which is domain decomposition by another
+name. Neither requires giving up the certificate: a product of certified factors
+carries a certificate.
+
+That is milestone 4, and it is the thing that decides whether this becomes a
+tool for real RNAs or stays a demonstration that the accounting can be done.

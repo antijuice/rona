@@ -24,6 +24,7 @@ from typing import Iterator
 
 from .certify import Certificate, certify
 from .fsp import Solver
+from .seed import seed as seed_suboptimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +72,8 @@ def transcribe(
     steps_per_nucleotide: int = 2,
     top: int = 8,
     certify_every: int = 1,
+    seed_window: float | None = 4.0,
+    seed_limit: int = 2000,
 ) -> Iterator[Frame]:
     """Fold while the chain grows, yielding one frame per nucleotide.
 
@@ -87,6 +90,9 @@ def transcribe(
 
     index = 0
     while True:
+        if seed_window:
+            # hand the solver the basins; the walk fills in the paths
+            seed_suboptimal(solver, window=seed_window, limit=seed_limit)
         for _ in range(steps_per_nucleotide):
             solver.advance(interval / steps_per_nucleotide)
         clock += interval

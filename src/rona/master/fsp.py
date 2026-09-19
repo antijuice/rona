@@ -96,6 +96,7 @@ class Solver:
         self.history: list[Step] = []
         self._neighbours: dict[tuple[Structure, int], list[tuple[Structure, float]]] = {}
         self._pair_cache: dict[int, list[tuple[int, int]]] = {}
+        self._ensemble: dict[int, float | None] = {}
 
     # ------------------------------------------------------------------
     def _moves(self, state: Structure) -> list[tuple[Structure, float]]:
@@ -158,6 +159,30 @@ class Solver:
         data.extend(diagonal.tolist())
         return csr_matrix((data, (rows, cols)), shape=(size, size)), escapes
 
+    def certified_outside(self) -> float:
+        """Equilibrium weight outside the retained set, against an exact ``Z``.
+
+        ``nan`` when ViennaRNA is not installed, which the caller treats as
+        "fall back to the weaker estimate" rather than as an error.
+        """
+        from .certify import partition_function_energy
+
+        ensemble = self._ensemble.get(self.length, ...)
+        if ensemble is ...:
+            ensemble = partition_function_energy(
+                self.energy.energy.seq[: self.length]
+            )
+            self._ensemble[self.length] = ensemble
+        if ensemble is None:
+            return float("nan")
+        kT = self.energy.kT
+        retained = 0.0
+        for state in self.states:
+            retained += math.exp(
+                -(self.energy.of(state, self.length) - ensemble) / kT
+            )
+        return max(0.0, 1.0 - retained)
+
     def leak_estimate(self, escapes) -> float:
         """Equilibrium weight sitting one move outside the retained set.
 
@@ -202,7 +227,16 @@ class Solver:
             )
             escaped = float(max(0.0, vector.sum() - evolved.sum()))
             if self.boundary == "reflecting":
-                indicator = self.leak_estimate(escapes)
+                # The certificate, not the one-move-out estimate.  The estimate
+                # only sees the states immediately outside, so it under-reports
+                # systematically: on a 40 nt transcript it declared convergence
+                # at 1e-3 while 7e-2 of the equilibrium weight was in fact
+                # missing.  The certificate sums the weight actually held
+                # against an exact partition function and costs one O(n^3)
+                # McCaskill per length, which is nothing next to being wrong.
+                indicator = self.certified_outside()
+                if indicator != indicator:  # no ViennaRNA: fall back
+                    indicator = self.leak_estimate(escapes)
             else:
                 indicator = escaped
             if (
@@ -216,8 +250,12 @@ class Solver:
             # *end* of the step, which is where the mass actually is
             frontier: dict[Structure, float] = {}
             if self.boundary == "reflecting":
-                # what matters is which missing states carry equilibrium weight
-                reference = min(self.energy.of(s, self.length) for s in self.states)
+                # Weigh the missing states on the same scale as the certificate,
+                # so "admit until the budget is met" is a statement about the
+                # same quantity the stopping rule tests.
+                reference = self._ensemble.get(self.length)
+                if reference is None:
+                    reference = min(self.energy.of(s, self.length) for s in self.states)
                 for target in {state for state, _c, _r in escapes}:
                     frontier[target] = math.exp(
                         -(self.energy.of(target, self.length) - reference)
@@ -236,10 +274,29 @@ class Solver:
             # the distribution, not like a breadth-first ball around it.
             ranked = sorted(frontier.items(), key=lambda kv: -kv[1])
             total = sum(flux for _state, flux in ranked)
-            tail = total * (1.0 if self.boundary == "reflecting" else dt)
+            if self.boundary == "reflecting":
+                # Admit enough weight to bring the certificate into budget, and
+                # no more.  Taking the whole shell instead - which an earlier
+                # version did - met the tolerance by brute force: 1,003 states
+                # for a 20-mer that needs 104.
+                tail = max(indicator - self.tolerance * 0.5, 0.0)
+            else:
+                tail = total * dt
             added = 0
-            for state, flux in ranked:
-                if tail <= self.tolerance * 0.5:
+            budget = self.tolerance * 0.5
+            # A state earns its place by carrying weight, not by being adjacent.
+            # Chasing the *global* deficit with a *one-shell* frontier drags in
+            # the whole shell every round - 750 states for a 20-mer that needs
+            # about 100 - because the weight that is missing usually sits
+            # several moves out and no amount of admitting the tail reaches it.
+            # Admitting only individually significant states lets the frontier
+            # walk outwards to find it instead.
+            floor = self.tolerance * 0.01
+            for position, (state, flux) in enumerate(ranked):
+                if self.boundary == "reflecting":
+                    if position >= 8 and flux < floor:
+                        break
+                elif tail <= budget:
                     break
                 if added >= per_round or len(self.states) >= self.max_states:
                     break
@@ -253,12 +310,32 @@ class Solver:
 
         pruned = 0.0
         if self.prune_below > 0.0:
-            small = evolved < self.prune_below
+            # A state is dropped only when it carries neither probability *now*
+            # nor equilibrium weight to come.  Pruning on probability alone lets
+            # the set ratchet upwards: a structure that mattered at length 15 is
+            # still held at length 40, long after the sequence has moved past
+            # it.  Pruning on weight alone would discard a transient that is
+            # currently occupied.  Both must be negligible.
+            idle = evolved < self.prune_below
+            reference = self._ensemble.get(self.length)
+            if reference is not None:
+                kT = self.energy.kT
+                floor = self.tolerance * 0.01
+                light = np.array([
+                    math.exp(-(self.energy.of(state, self.length) - reference) / kT)
+                    < floor
+                    for state in self.states
+                ])
+                idle = idle & light
             # never prune everything: a state must survive to carry the mass
-            if not small.all():
-                pruned = float(evolved[small].sum())
+            if not idle.all():
+                pruned = float(evolved[idle].sum())
                 evolved = evolved.copy()
-                evolved[small] = 0.0
+                evolved[idle] = 0.0
+                keep = ~idle
+                self.states = [s for s, k in zip(self.states, keep) if k]
+                self.position = {s: i for i, s in enumerate(self.states)}
+                evolved = evolved[keep]
 
         self.probability = evolved
         self.bound += escaped + pruned
