@@ -357,3 +357,147 @@ carries a certificate.
 
 That is milestone 4, and it is the thing that decides whether this becomes a
 tool for real RNAs or stays a demonstration that the accounting can be done.
+
+---
+
+## Measured, milestone 4
+
+The 50 nt wall was a representation problem, and it had the answer the previous
+section guessed at — but not in the form it guessed.
+
+### What does not work: cutting the chain
+
+The obvious factorisation is a cut point: pick a position, fold the two halves
+independently, multiply. Its error is `1 - Z_L·Z_R/Z`, three McCaskill calls,
+which makes it cheap to test and therefore cheap to refute. The best cut in each
+of three sequences:
+
+| sequence | best cut | error |
+|---|---|---|
+| designed, 50 nt | position 20 | 2.8e-2 |
+| user sequence, 5' 60 nt | position 42 | 9.95e-1 |
+| SRP-like, 70 nt | position 26 | 7.8e-1 |
+
+No cut anywhere in any of them reaches 1e-3. Unconditional factorisation of an
+RNA ensemble is not available, and that is not a tuning problem: a cut point is
+only independent if *no* structure pairs across it, and the ensemble always
+contains some that do.
+
+### What does work: conditioning on a formed pair
+
+A formed base pair separates inside from outside exactly — that is the content
+of McCaskill's own recursion — so the factorisation has to be *conditional*. Fix
+a nested set of anchor pairs. The structures containing all of them split the
+free nucleotides into regions, one per anchor plus the exterior, and then two
+things hold:
+
+* **every admissible pair lies wholly within one region.** A pair with endpoints
+  in two different regions necessarily crosses an anchor, and a crossing pair is
+  not in the state space. Measured: 0 of the sequence's non-crossing candidate
+  pairs straddle two regions of a four-anchor decomposition.
+* **the free energy is additive across a region boundary,** because a region
+  boundary is a loop boundary and the nearest-neighbour model is a sum over
+  loops. Measured: residual `G(both) - [G(in) + G(out) - G(anchors)]` of
+  0.0 kcal/mol over 200 random five-region structures, and to floating point
+  (1e-15 relative) over an enumerated state space.
+
+Additivity plus locality gives the rate for a move inside a region as a function
+of that region alone, so on the block of states containing the anchors
+
+```
+Q = Q_1 ⊕ Q_2 ⊕ … ⊕ Q_k        and       exp(tQ) = exp(tQ_1) ⊗ … ⊗ exp(tQ_k)
+```
+
+A product distribution therefore stays a product *exactly*, at a cost that is
+the sum of the region supports rather than their product. This is an identity,
+not an approximation: checked against a fully enumerated 640-state block, equal
+to 1e-15 relative with identical sparsity (`tests/test_factor.py`).
+
+The regions are not a second solver. `Solver` gained a `base` structure that is
+always present and a `within` set of nucleotides it may pair; a region is that
+same solver with the anchors as base. Same rates, same evaluator, same expansion
+and pruning — nothing that can drift out of step with the flat path.
+
+### What it costs to reach the same certificate
+
+45 nt, anchors taken from the equilibrium pair probabilities, per-region
+tolerance `ε/k` so the union bound still gives `ε`:
+
+| ε | flat states | flat wall | anchored states | anchored wall |
+|---|---|---|---|---|
+| 1e-2 | 252 | 2.1 s | 98 | 0.1 s |
+| 1e-3 | 538 | 4.0 s | 147 | 0.1 s |
+| 1e-4 | 1,905 | 34.7 s | 218 | 0.1 s |
+| 1e-5 | 2,586 | 59.3 s | 343 | 0.2 s |
+
+The saving grows as the tolerance tightens, which is the signature of a product:
+a loose tolerance needs only the dominant corner of it, a tight one needs the
+whole thing.
+
+It is not free money. At 55 nt the same sequence has one dominant hairpin and a
+37 nt remainder that nothing separates; the anchors cut almost nothing and the
+anchored form is *worse* — 1,745 states against the flat 1,118. So the
+decomposition has to be adaptive, and has to be honest about its own error.
+
+### The two approximations, and what they cost
+
+`rona.master.anchored` promotes a pair to an anchor only when it can afford to,
+and both costs are computed from the distribution actually held:
+
+* **conditioning** discards the probability of states lacking the pair — exactly
+  the complement of its marginal in the region being split;
+* **factorising** replaces the conditional joint over the two halves by the
+  product of its marginals, at a cost of `‖p − p_in ⊗ p_out‖₁`.
+
+Both join a running `slack` that is added to the per-region truncation bounds,
+and a promotion over budget is simply refused. Conditioning is left visible
+rather than renormalised away, so `1 − retained_mass` is a check on the
+bookkeeping that does not run through the bookkeeping.
+
+Promotion reads the kinetic marginal. Demotion cannot: an anchored ensemble holds
+no states without its anchors, so it is structurally blind to them melting. So
+demotion is driven from outside the representation, by the exact equilibrium
+probability of the anchor — `Z` with the pair enforced over `Z` without it. That
+is a guard rather than a prediction, which is the right asymmetry: releasing an
+anchor is always safe and holding a stale one is not.
+
+Releasing is lossless as an operation but it is not an undo. The marginals do not
+remember the joint, so a promote/release round trip leaves behind exactly the
+`factorised` error that was already paid and already counted — which is what
+`tests/test_anchored.py` asserts, rather than asserting a zero that an earlier
+draft of it wrongly expected.
+
+### Where this stops now
+
+Transcription is what makes the adaptive scheme work at all. Cold-started at
+45 nt the ensemble has to solve the hard flat problem before any marginal is
+certain enough to anchor anything — 995 states and 37 s to find one anchor.
+Growing into it, the first domain becomes certain while the molecule is still
+short and cheap, and every later nucleotide arrives in a representation that is
+already factorised.
+
+82 nt transcript, three hairpin domains, 5' to 3' at 30 nt/s, tolerance 1e-3:
+
+| length | stored | represents | certified outside | wall |
+|---|---|---|---|---|
+| 20 nt | 14 | 40 | 5.2e-4 | 0.3 s |
+| 40 nt | 574 | 4,544 | 2.7e-2 | 7.5 s |
+| 50 nt | 63 | 4,320 | 7.9e-4 | 8.2 s |
+| 70 nt | 90 | 50,688 | 1.4e-3 | 32 s |
+| 82 nt | 1,292 | 973,824 | 1.7e-3 | 47 s |
+
+Against milestone 3's 50 nt with 1,386 states in 79 s at 1.4e-3. The 2.7e-2 at
+40 nt is a real excursion, not a typo: a domain is nucleating there and nothing
+in it is certain, so the representation correctly declines to anchor and pays
+flat-solver prices for a few nucleotides until it settles.
+
+### A bug this uncovered in the certificate
+
+ViennaRNA's `hc_add_bp` without `CONSTRAINT_CONTEXT_ENFORCE` *permits* a pair
+rather than requiring it. The default is a favour, not a constraint. So a
+"constrained" partition function still summed over structures omitting the
+anchors, and a region whose state space held exactly one structure certified at
+0.29 instead of 0 — the certificate was dividing by a `Z` over the wrong set.
+Unconstrained calls, which is every certificate reported before this milestone,
+are unaffected; the regression test in `tests/test_factor.py` fails on the old
+code and passes on the new.

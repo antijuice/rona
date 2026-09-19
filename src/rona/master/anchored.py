@@ -389,6 +389,28 @@ class Anchored:
     def regions(self) -> tuple[Region, ...]:
         return decompose(self.anchors, self.length)
 
+    def pair_marginals(self) -> dict[Pair, float]:
+        """Probability each pair is formed, conditional on the anchor set.
+
+        The factors are independent, so a pair's probability is its marginal in
+        its own region and nothing else - which is exactly why this is cheap to
+        report at every nucleotide where the flat solver would have to sum over
+        the whole retained set.  Anchors read 1 by construction: that is the
+        conditioning, and its cost is in ``slack``, not hidden here.
+        """
+        out: dict[Pair, float] = {pair: 1.0 for pair in self.anchors}
+        for owner in self.parts:
+            out.update(self.marginals(owner))
+        return out
+
+    def paired(self) -> dict[int, float]:
+        """Probability each nucleotide is paired at all."""
+        out: dict[int, float] = {k: 0.0 for k in range(self.length)}
+        for (i, j), p in self.pair_marginals().items():
+            out[i] = out.get(i, 0.0) + p
+            out[j] = out.get(j, 0.0) + p
+        return out
+
 
 @dataclass(slots=True)
 class AnchoredFrame:

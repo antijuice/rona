@@ -11,6 +11,13 @@ Projection (Munsky & Khammash 2006) restricts the generator to a retained set
 and returns a certificate: the probability mass that leaves the set bounds the
 L1 error of what remains.  Every distribution this package reports carries that
 bound.  See ``docs/v2-design.md``.
+
+Past about 50 nt the limit stops being arithmetic and becomes representational:
+the retained set has to cover a *product* over structural domains that fold
+independently.  :mod:`rona.master.factor` shows that conditional on a nested set
+of anchor pairs the generator is exactly the Kronecker sum of per-region
+generators, so the product can be stored as a product; :mod:`rona.master.anchored`
+decides when to do that and measures what it costs.
 """
 
 from .structures import Structure, dotbracket, from_dotbracket, helices_of
@@ -19,6 +26,8 @@ from .generator import StateIndex, build_generator
 from .certify import Certificate, certify
 from .cotrans import Frame, Schedule, transcribe
 from .fsp import Solver, Step
+from .factor import Region, decompose, region_candidates, rejoin, restrict
+from .anchored import Anchored, AnchoredFrame, Promotion
 
 __all__ = [
     "Structure",
@@ -36,4 +45,12 @@ __all__ = [
     "transcribe",
     "Solver",
     "Step",
+    "Region",
+    "decompose",
+    "region_candidates",
+    "rejoin",
+    "restrict",
+    "Anchored",
+    "AnchoredFrame",
+    "Promotion",
 ]
