@@ -139,7 +139,8 @@ def test_the_fsp_bound_is_never_violated_and_is_tight():
 
     def run(cap):
         solver = Solver(
-            cache, model, tolerance=1e-14, prune_below=0.0, max_states=cap
+            cache, model, tolerance=1e-14, prune_below=0.0, max_states=cap,
+            boundary="absorbing",
         )
         for _ in range(steps):
             solver.advance(horizon / steps, per_round=32)
@@ -173,7 +174,9 @@ def test_the_fsp_bound_is_never_violated_and_is_tight():
 
 def test_pruned_mass_is_added_to_the_certificate():
     cache, model, _order, _index, _matrix, _pairs = chain(SMALL)
-    solver = Solver(cache, model, tolerance=1e-12, prune_below=1e-3)
+    solver = Solver(
+        cache, model, tolerance=1e-12, prune_below=1e-3, boundary="absorbing"
+    )
     for _ in range(4):
         solver.advance(1e-5)
     assert solver.bound >= sum(step.pruned for step in solver.history)

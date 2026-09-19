@@ -13,6 +13,7 @@ small the number says ``1.0`` rather than the answer looking plausible.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -59,6 +60,7 @@ class Solver:
         prune_below: float = 1e-10,
         max_states: int = 50_000,
         integration_tolerance: float = 1e-8,
+        boundary: str = "reflecting",
     ) -> None:
         self.energy = energy if isinstance(energy, EnergyCache) else EnergyCache(energy)
         self.model = model or MoveModel()
@@ -67,6 +69,20 @@ class Solver:
         self.prune_below = prune_below
         self.max_states = max_states
         self.integration_tolerance = integration_tolerance
+        if boundary not in ("reflecting", "absorbing"):
+            raise ValueError("boundary must be 'reflecting' or 'absorbing'")
+        #: ``absorbing`` gives a rigorous bound on the mass that *ever* left the
+        #: retained set.  That bound is correct and, for this system, useless:
+        #: it accumulates at the gross boundary flux, so a reversible excursion
+        #: to a high-energy structure that returns immediately is charged in
+        #: full, and at 10^7 s^-1 the bound reaches 1 within microseconds.
+        #: ``reflecting`` deletes the escaping transitions instead of charging
+        #: for them, which conserves mass exactly and makes the retained chain a
+        #: proper process whose equilibrium is the Boltzmann distribution
+        #: *conditioned on the retained set*.  Its error is then governed by how
+        #: much equilibrium weight lies outside, which is what ``leak_estimate``
+        #: measures.  (Cao, Terebus & Liang, Bull Math Biol 2016.)
+        self.boundary = boundary
 
         self.states: list[Structure] = [EMPTY]
         self.position: dict[Structure, int] = {EMPTY: 0}
@@ -75,6 +91,8 @@ class Solver:
         self.bound = 0.0
         #: Estimated (not bounded) L1 error from time integration.
         self.integration_error = 0.0
+        #: Latest boundary indicator (reflecting) or escaped mass (absorbing).
+        self.leak = 0.0
         self.history: list[Step] = []
         self._neighbours: dict[tuple[Structure, int], list[tuple[Structure, float]]] = {}
         self._pair_cache: dict[int, list[tuple[int, int]]] = {}
@@ -127,6 +145,10 @@ class Solver:
                 row = self.position.get(target)
                 if row is None:
                     escapes.append((target, column, rate))
+                    if self.boundary == "reflecting":
+                        # the move is refused rather than charged for, so the
+                        # column still sums to zero and no mass is lost
+                        diagonal[column] += rate
                     continue
                 rows.append(row)
                 cols.append(column)
@@ -135,6 +157,33 @@ class Solver:
         cols.extend(range(size))
         data.extend(diagonal.tolist())
         return csr_matrix((data, (rows, cols)), shape=(size, size)), escapes
+
+    def leak_estimate(self, escapes) -> float:
+        """Equilibrium weight sitting one move outside the retained set.
+
+        With a reflecting boundary the retained chain relaxes to the Boltzmann
+        distribution conditioned on the retained set, so what the truncation
+        costs is the weight the true distribution puts outside it.  The states
+        one move out are the cheapest non-trivial probe of that: their summed
+        Boltzmann weight, relative to the retained set's, estimates how much is
+        missing.
+
+        This is an *estimate*, not the certificate the absorbing boundary gives.
+        It is reported as one, and validated by comparing against the error
+        measured on fully enumerated state spaces.
+        """
+        if not escapes:
+            return 0.0
+        inside = 0.0
+        reference = min(self.energy.of(s, self.length) for s in self.states)
+        for state in self.states:
+            inside += math.exp(-(self.energy.of(state, self.length) - reference)
+                               / self.energy.kT)
+        outside = 0.0
+        for target in {state for state, _column, _rate in escapes}:
+            outside += math.exp(-(self.energy.of(target, self.length) - reference)
+                                / self.energy.kT)
+        return outside / (inside + outside)
 
     def _padded(self) -> np.ndarray:
         vector = np.zeros(len(self.states))
@@ -152,8 +201,12 @@ class Solver:
                 matrix, vector, dt, tolerance=self.integration_tolerance
             )
             escaped = float(max(0.0, vector.sum() - evolved.sum()))
+            if self.boundary == "reflecting":
+                indicator = self.leak_estimate(escapes)
+            else:
+                indicator = escaped
             if (
-                escaped <= self.tolerance
+                indicator <= self.tolerance
                 or expansions >= max_expansions
                 or len(self.states) >= self.max_states
                 or not escapes
@@ -162,9 +215,18 @@ class Solver:
             # weight each escape by the probability sitting on its source at the
             # *end* of the step, which is where the mass actually is
             frontier: dict[Structure, float] = {}
-            for target, column, rate in escapes:
-                share = rate * max(evolved[column], vector[column])
-                frontier[target] = frontier.get(target, 0.0) + share
+            if self.boundary == "reflecting":
+                # what matters is which missing states carry equilibrium weight
+                reference = min(self.energy.of(s, self.length) for s in self.states)
+                for target in {state for state, _c, _r in escapes}:
+                    frontier[target] = math.exp(
+                        -(self.energy.of(target, self.length) - reference)
+                        / self.energy.kT
+                    )
+            else:
+                for target, column, rate in escapes:
+                    share = rate * max(evolved[column], vector[column])
+                    frontier[target] = frontier.get(target, 0.0) + share
             # Admit states in order of the probability actually arriving at
             # them, and stop once the flux left outside would not breach the
             # budget.  Admitting a fixed number instead - which an earlier
@@ -173,7 +235,8 @@ class Solver:
             # 80,232 states, so the retained set should look like the support of
             # the distribution, not like a breadth-first ball around it.
             ranked = sorted(frontier.items(), key=lambda kv: -kv[1])
-            tail = sum(flux for _state, flux in ranked) * dt
+            total = sum(flux for _state, flux in ranked)
+            tail = total * (1.0 if self.boundary == "reflecting" else dt)
             added = 0
             for state, flux in ranked:
                 if tail <= self.tolerance * 0.5:
@@ -183,7 +246,7 @@ class Solver:
                 if state not in self.position:
                     self._add(state)
                     added += 1
-                tail -= flux * dt
+                tail -= flux * (1.0 if self.boundary == "reflecting" else dt)
             if added == 0:
                 break
             expansions += 1
@@ -199,6 +262,7 @@ class Solver:
 
         self.probability = evolved
         self.bound += escaped + pruned
+        self.leak = indicator
         step = Step(escaped=escaped, pruned=pruned, states=len(self.states),
                     expansions=expansions)
         self.history.append(step)
