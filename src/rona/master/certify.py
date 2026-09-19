@@ -46,8 +46,24 @@ class Certificate:
         )
 
 
-def partition_function_energy(sequence: str, temperature: float = 37.0) -> float | None:
-    """Ensemble free energy over *all* structures, or ``None`` without ViennaRNA."""
+def partition_function_energy(
+    sequence: str,
+    temperature: float = 37.0,
+    *,
+    forced=(),
+    unpaired=(),
+) -> float | None:
+    """Ensemble free energy over all structures, or ``None`` without ViennaRNA.
+
+    ``forced`` pairs and ``unpaired`` positions are hard constraints, which is
+    what certifies a *region* of an anchored decomposition rather than the whole
+    molecule: force the region's anchors, forbid everything outside it from
+    pairing, and the result is an exact ``Z`` for that region's own state space.
+    Because the free energy is additive across a region boundary
+    (:mod:`rona.master.factor`), that ``Z`` is on the same scale as the energies
+    the solver evaluates, so the ratio is still a certificate and not an
+    apples-to-oranges comparison.
+    """
     try:
         import RNA
     except ImportError:  # pragma: no cover - optional dependency
@@ -55,6 +71,19 @@ def partition_function_energy(sequence: str, temperature: float = 37.0) -> float
     model = RNA.md()
     model.temperature = temperature
     fold = RNA.fold_compound(sequence, model)
+    # ENFORCE is not optional decoration.  Without it ``hc_add_bp`` only *allows*
+    # the pair in every loop context - the default is a favour, not a
+    # requirement - so the "constrained" ensemble still contains every structure
+    # that omits the pair.  Measured on a region whose constrained ensemble holds
+    # exactly one structure, the non-enforcing form returned an ensemble free
+    # energy of -8.614 where that structure's energy is -8.400: the certificate
+    # was dividing by a partition function over the wrong set, and read 0.29
+    # instead of 0.
+    context = RNA.CONSTRAINT_CONTEXT_ALL_LOOPS | RNA.CONSTRAINT_CONTEXT_ENFORCE
+    for i, j in forced:
+        fold.hc_add_bp(i + 1, j + 1, context)  # ViennaRNA counts from 1
+    for position in unpaired:
+        fold.hc_add_up(position + 1, context)
     _structure, ensemble = fold.pf()
     return float(ensemble)
 
@@ -62,7 +91,10 @@ def partition_function_energy(sequence: str, temperature: float = 37.0) -> float
 def certify(solver, *, temperature: float = 37.0) -> Certificate:
     """How much equilibrium weight lies outside ``solver``'s retained set."""
     sequence = solver.energy.energy.seq[: solver.length]
-    ensemble = partition_function_energy(sequence, temperature)
+    ensemble = partition_function_energy(
+        sequence, temperature,
+        forced=sorted(solver.base), unpaired=solver.forbidden(),
+    )
     if ensemble is None:  # pragma: no cover - optional dependency
         return Certificate(float("nan"), float("nan"), len(solver.states), False)
 
@@ -71,6 +103,6 @@ def certify(solver, *, temperature: float = 37.0) -> Certificate:
     # exponentials stay in range for long sequences
     retained = 0.0
     for state in solver.states:
-        retained += math.exp(-(solver.energy.of(state, solver.length) - ensemble) / kT)
+        retained += math.exp(-(solver._energy(state) - ensemble) / kT)
     outside = max(0.0, 1.0 - retained)
     return Certificate(outside, 2.0 * outside, len(solver.states))

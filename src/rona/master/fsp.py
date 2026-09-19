@@ -61,6 +61,8 @@ class Solver:
         max_states: int = 50_000,
         integration_tolerance: float = 1e-8,
         boundary: str = "reflecting",
+        base: Structure = EMPTY,
+        allowed=None,
     ) -> None:
         self.energy = energy if isinstance(energy, EnergyCache) else EnergyCache(energy)
         self.model = model or MoveModel()
@@ -93,19 +95,50 @@ class Solver:
         self.integration_error = 0.0
         #: Latest boundary indicator (reflecting) or escaped mass (absorbing).
         self.leak = 0.0
+        #: Pairs held fixed: present in every state, never offered for removal.
+        #: With ``allowed`` restricted to one region's pairs this makes the
+        #: solver a *region* solver, and by the additivity theorem in
+        #: :mod:`rona.master.factor` its dynamics are then exactly the
+        #: restriction of the flat solver's - same rates from the same code.
+        self.base = base
+        #: The only pairs this solver may form; ``None`` for all of them.
+        self.allowed = None if allowed is None else frozenset(allowed)
+        if self.allowed is not None and self.allowed & self.base:
+            raise ValueError("a base pair must not also be an allowed move")
         self.history: list[Step] = []
         self._neighbours: dict[tuple[Structure, int], list[tuple[Structure, float]]] = {}
         self._pair_cache: dict[int, list[tuple[int, int]]] = {}
         self._ensemble: dict[int, float | None] = {}
 
     # ------------------------------------------------------------------
+    def _energy(self, state: Structure) -> float:
+        """Free energy of a state, in context: the base pairs are always there."""
+        return self.energy.of(state | self.base, self.length)
+
+    def forbidden(self) -> list[int]:
+        """Nucleotides this solver may never pair, for the constrained ``Z``.
+
+        Everything the allowed set cannot reach and the base does not already
+        use.  For the flat solver that is nothing; for a region solver it is
+        every nucleotide belonging to another region.
+        """
+        if self.allowed is None:
+            return []
+        reachable = {k for pair in self.allowed for k in pair}
+        used = {k for pair in self.base for k in pair}
+        return [k for k in range(self.length) if k not in reachable and k not in used]
+
     def _moves(self, state: Structure) -> list[tuple[Structure, float]]:
         key = (state, self.length)
         found = self._neighbours.get(key)
         if found is None:
-            found = neighbours(
-                self.energy, state, self.length, self.model, self._pairs()
+            # Evaluated on the full structure - base included - so the energies
+            # and hence the rates are the molecule's, not a fragment's.  The base
+            # is then stripped back off, because it is not part of the state.
+            whole = neighbours(
+                self.energy, state | self.base, self.length, self.model, self._pairs()
             )
+            found = [(target - self.base, rate) for target, rate in whole]
             self._neighbours[key] = found
         return found
 
@@ -113,6 +146,8 @@ class Solver:
         found = self._pair_cache.get(self.length)
         if found is None:
             found = candidate_pairs(self.energy, self.length, self.model)
+            if self.allowed is not None:
+                found = [pair for pair in found if pair in self.allowed]
             self._pair_cache[self.length] = found
         return found
 
@@ -170,7 +205,9 @@ class Solver:
         ensemble = self._ensemble.get(self.length, ...)
         if ensemble is ...:
             ensemble = partition_function_energy(
-                self.energy.energy.seq[: self.length]
+                self.energy.energy.seq[: self.length],
+                forced=sorted(self.base),
+                unpaired=self.forbidden(),
             )
             self._ensemble[self.length] = ensemble
         if ensemble is None:
@@ -178,9 +215,7 @@ class Solver:
         kT = self.energy.kT
         retained = 0.0
         for state in self.states:
-            retained += math.exp(
-                -(self.energy.of(state, self.length) - ensemble) / kT
-            )
+            retained += math.exp(-(self._energy(state) - ensemble) / kT)
         return max(0.0, 1.0 - retained)
 
     def leak_estimate(self, escapes) -> float:
@@ -200,14 +235,12 @@ class Solver:
         if not escapes:
             return 0.0
         inside = 0.0
-        reference = min(self.energy.of(s, self.length) for s in self.states)
+        reference = min(self._energy(s) for s in self.states)
         for state in self.states:
-            inside += math.exp(-(self.energy.of(state, self.length) - reference)
-                               / self.energy.kT)
+            inside += math.exp(-(self._energy(state) - reference) / self.energy.kT)
         outside = 0.0
         for target in {state for state, _column, _rate in escapes}:
-            outside += math.exp(-(self.energy.of(target, self.length) - reference)
-                                / self.energy.kT)
+            outside += math.exp(-(self._energy(target) - reference) / self.energy.kT)
         return outside / (inside + outside)
 
     def _padded(self) -> np.ndarray:
@@ -255,11 +288,10 @@ class Solver:
                 # same quantity the stopping rule tests.
                 reference = self._ensemble.get(self.length)
                 if reference is None:
-                    reference = min(self.energy.of(s, self.length) for s in self.states)
+                    reference = min(self._energy(s) for s in self.states)
                 for target in {state for state, _c, _r in escapes}:
                     frontier[target] = math.exp(
-                        -(self.energy.of(target, self.length) - reference)
-                        / self.energy.kT
+                        -(self._energy(target) - reference) / self.energy.kT
                     )
             else:
                 for target, column, rate in escapes:
@@ -322,8 +354,7 @@ class Solver:
                 kT = self.energy.kT
                 floor = self.tolerance * 0.01
                 light = np.array([
-                    math.exp(-(self.energy.of(state, self.length) - reference) / kT)
-                    < floor
+                    math.exp(-(self._energy(state) - reference) / kT) < floor
                     for state in self.states
                 ])
                 idle = idle & light
@@ -359,7 +390,7 @@ class Solver:
 
     def distribution(self, *, top: int | None = None) -> list[tuple[str, float]]:
         pairs = [
-            (dotbracket(state, self.length), float(p))
+            (dotbracket(state | self.base, self.length), float(p))
             for state, p in zip(self.states, self.probability)
             if p > 0.0
         ]
