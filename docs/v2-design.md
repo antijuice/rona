@@ -476,20 +476,40 @@ Growing into it, the first domain becomes certain while the molecule is still
 short and cheap, and every later nucleotide arrives in a representation that is
 already factorised.
 
-82 nt transcript, three hairpin domains, 5' to 3' at 30 nt/s, tolerance 1e-3:
+82 nt transcript, three hairpin domains, 5' to 3' at 30 nt/s, tolerance 1e-3,
+both solvers on the same sequence:
 
-| length | stored | represents | certified outside | wall |
-|---|---|---|---|---|
-| 20 nt | 14 | 40 | 5.2e-4 | 0.3 s |
-| 40 nt | 574 | 4,544 | 2.7e-2 | 7.5 s |
-| 50 nt | 63 | 4,320 | 7.9e-4 | 8.2 s |
-| 70 nt | 90 | 50,688 | 1.4e-3 | 32 s |
-| 82 nt | 1,292 | 973,824 | 1.7e-3 | 47 s |
+| length | flat states | flat wall | stored | represents | anchored wall |
+|---|---|---|---|---|---|
+| 20 nt | 104 | 0.3 s | 14 | 40 | 0.2 s |
+| 30 nt | 153 | 0.9 s | 71 | 268 | 0.3 s |
+| 40 nt | 933 | 18.5 s | 574 | 4,544 | 10.3 s |
+| 50 nt | 266 | 21.1 s | 63 | 4,320 | 11.0 s |
+| 60 nt | 943 | 52.6 s | 751 | 70,368 | 18.9 s |
+| 70 nt | 686 | 124.9 s | 90 | 50,688 | 35.8 s |
+| 82 nt | 820 | 156.7 s | 1,292 | 973,824 | 50.8 s |
 
-Against milestone 3's 50 nt with 1,386 states in 79 s at 1.4e-3. The 2.7e-2 at
-40 nt is a real excursion, not a typo: a domain is nucleating there and nothing
-in it is certain, so the representation correctly declines to anchor and pays
-flat-solver prices for a few nucleotides until it settles.
+3.1x end to end, at comparable certificates (9.2e-4 flat against 1.45e-3
+anchored at 80 nt).
+
+Note what this is *not*. The flat solver reaches 82 nt on this sequence in
+157 s — the 50 nt figure in milestone 3 was a different and harder sequence, so
+the honest claim is a speedup that grows with length, not a wall that moved from
+50 nt to 82. Comparing the two milestones' tables directly would be comparing
+sequences, and an earlier draft of this section did exactly that.
+
+The 2.7e-2 at 40 nt is a real excursion, not a typo, and both solvers show it: a
+domain is nucleating there and nothing in it is certain, so the anchored form
+correctly declines to anchor and pays flat prices for a few nucleotides until it
+settles.
+
+The speedup is also strongly sequence-dependent, in the direction the theory
+predicts. The 45 nt table above reaches 350x because a tight tolerance on a
+well-separated molecule is almost pure product. The user-supplied 316 nt
+sequence, which is AU-rich with many competing marginal helices, gives *nothing*
+at 30 nt: no pair reaches the certainty that would pay for anchoring it, the
+ensemble correctly stays flat, and it costs 34 s for 1,664 states. A method that
+reported a speedup there would be reporting an error it had not measured.
 
 ### A bug this uncovered in the certificate
 
